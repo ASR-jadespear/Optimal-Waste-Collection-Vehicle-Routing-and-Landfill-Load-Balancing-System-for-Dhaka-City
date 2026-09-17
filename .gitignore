@@ -1,0 +1,28 @@
+# Build directories
+build/
+bin/
+out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Object files & Libraries
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*~
+
+# Raylib FetchContent build cache
+_deps/
+
