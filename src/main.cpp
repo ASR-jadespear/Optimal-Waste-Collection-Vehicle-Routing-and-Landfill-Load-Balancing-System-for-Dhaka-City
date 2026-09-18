@@ -44,8 +44,8 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    // Graphical mode with Raylib
-    SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
+    // Graphical mode with Raylib - avoid MSAA flag as many Linux/X11/Wayland/VM drivers fail with GLXBadFBConfig
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
 
     const int initialWidth = 1440;
     const int initialHeight = 900;
@@ -62,6 +62,8 @@ int main(int argc, char *argv[])
 
     SetTargetFPS(60);
 
+    dhaka::UIComponents::initFont();
+
     dhaka::Renderer renderer(engine, initialWidth, initialHeight);
 
     // Main Simulation Loop
@@ -76,6 +78,7 @@ int main(int argc, char *argv[])
         renderer.render();
     }
 
+    dhaka::UIComponents::unloadFont();
     CloseWindow();
     std::cout << "[SYSTEM] Simulation terminated cleanly.\n";
     return 0;

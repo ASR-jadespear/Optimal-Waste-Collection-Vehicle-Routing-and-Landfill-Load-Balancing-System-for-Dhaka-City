@@ -29,6 +29,13 @@ namespace dhaka
         int completedTripsCount = 0;
     };
 
+    struct LiveFeedEntry
+    {
+        double timestamp = 0.0;   // sim time in seconds
+        std::string message;
+        int relevantStage = 0;    // 0=RoadNetwork, 1=Routing, 2=Sequencing, 3=LoadSelect, 4=LandfillBalance
+    };
+
     class SimulationEngine
     {
     public:
@@ -46,6 +53,10 @@ namespace dhaka
         KnapsackResult lastKnapsackResult;
         LandfillAssignmentResult lastMaxFlowResult;
         std::string lastAlgorithmStatusMessage;
+
+        // Live Feed for UI narration
+        std::vector<LiveFeedEntry> liveFeedLog;
+        void logFeed(const std::string& msg, int stage);
 
         // Active Disruptions
         std::vector<DisruptionEvent> activeDisruptions;

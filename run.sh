@@ -13,12 +13,10 @@ echo "======================================================================"
 echo " Starting Dhaka Waste Routing & Landfill Load-Balancing System...    "
 echo "======================================================================"
 
-# 1. Compile project if build does not exist or target missing
-if [ ! -f "build/dhaka_waste_sim" ]; then
-    echo "[INFO] Compiling project using CMake..."
-    cmake -B build -DCMAKE_BUILD_TYPE=Release
-    cmake --build build -j$(nproc)
-fi
+# 1. Compile project using CMake
+echo "[INFO] Building project with CMake..."
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
 
 # 2. Launch the application
 # If partition has noexec mount flag (e.g. Windows NTFS mount), run from /tmp

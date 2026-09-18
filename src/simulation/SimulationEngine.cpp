@@ -20,6 +20,7 @@ namespace dhaka
         isPaused = false;
         activeDisruptions.clear();
         nextDisruptionId = 1;
+        liveFeedLog.clear();
 
         runGlobalUrgencyAudit();
 
@@ -31,11 +32,25 @@ namespace dhaka
 
         updateMetrics();
         lastAlgorithmStatusMessage = "Dhaka Waste Routing Engine initialized. Fleet dispatched.";
+        logFeed(lastAlgorithmStatusMessage, 0);
     }
 
     void SimulationEngine::reset()
     {
         initialize();
+    }
+
+    void SimulationEngine::logFeed(const std::string& msg, int stage)
+    {
+        LiveFeedEntry entry;
+        entry.timestamp = simTimeSeconds;
+        entry.message = msg;
+        entry.relevantStage = stage;
+        liveFeedLog.push_back(entry);
+        if (liveFeedLog.size() > 50)
+        {
+            liveFeedLog.erase(liveFeedLog.begin());
+        }
     }
 
     void SimulationEngine::runGlobalUrgencyAudit()
@@ -123,6 +138,7 @@ namespace dhaka
                << lastKnapsackResult.itemsSelected << " bins, "
                << static_cast<int>(lastKnapsackResult.totalWeightKg) << " kg payload)";
             lastAlgorithmStatusMessage = ss.str();
+            logFeed(lastAlgorithmStatusMessage, 3);
         }
     }
 
@@ -183,6 +199,7 @@ namespace dhaka
                << " via Max-Flow Edmonds-Karp (Balance ratio: "
                << static_cast<int>(lastMaxFlowResult.balanceRatio * 100) << "%)";
             lastAlgorithmStatusMessage = ss.str();
+            logFeed(lastAlgorithmStatusMessage, 4);
         }
     }
 
@@ -247,6 +264,7 @@ namespace dhaka
         }
 
         lastAlgorithmStatusMessage = "Disruption Alert: Congestion spike on " + ev.name + ". Rerouted affected vehicles via A*.";
+        logFeed(lastAlgorithmStatusMessage, 1);
     }
 
     void SimulationEngine::triggerRoadClosure(int edgeId)
@@ -282,6 +300,7 @@ namespace dhaka
         }
 
         lastAlgorithmStatusMessage = "Disruption Alert: Road CLOSED (" + ev.name + "). Emergency A* bypass computed.";
+        logFeed(lastAlgorithmStatusMessage, 1);
     }
 
     void SimulationEngine::clearRoadDisruption(int edgeId)
@@ -300,6 +319,7 @@ namespace dhaka
         }
 
         lastAlgorithmStatusMessage = "Traffic normalized on " + data.graph.getEdge(edgeId).roadName;
+        logFeed(lastAlgorithmStatusMessage, 0);
     }
 
     void SimulationEngine::triggerBinOverflow(int binId, double extraWasteKg)
@@ -335,6 +355,7 @@ namespace dhaka
         }
 
         lastAlgorithmStatusMessage = "Overflow Alert at " + data.bins[binId].name + "! Urgency elevated in Priority Queue.";
+        logFeed(lastAlgorithmStatusMessage, 2);
     }
 
     void SimulationEngine::triggerRandomDhakaDisruption()
