@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/CollectionPoint.hpp"
+#include "algorithms/AlgorithmTrace.hpp"
 #include <vector>
 #include <string>
 
@@ -37,14 +38,18 @@ namespace dhaka
         static KnapsackResult solve(
             double vehicleRemainingCapKg,
             const std::vector<const CollectionPoint *> &candidateBins,
-            double weightUnitKg = 25.0);
+            double weightUnitKg = 25.0,
+            AlgorithmTrace *traceOut = nullptr,
+            int vehicleId = -1);
 
         // Overload accepting CollectionPoint value objects
         static KnapsackResult solve(
             double vehicleRemainingCapKg,
             const std::vector<CollectionPoint> &allBins,
             const std::vector<int> &candidateBinIds,
-            double weightUnitKg = 25.0);
+            double weightUnitKg = 25.0,
+            AlgorithmTrace *traceOut = nullptr,
+            int vehicleId = -1);
     };
 
 } // namespace dhaka

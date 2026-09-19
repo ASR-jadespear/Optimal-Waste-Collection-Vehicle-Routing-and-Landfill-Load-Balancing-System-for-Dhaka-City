@@ -3,6 +3,8 @@
 #include <limits>
 #include <algorithm>
 #include <cmath>
+#include <sstream>
+#include <iomanip>
 
 namespace dhaka
 {
@@ -23,7 +25,9 @@ namespace dhaka
         const Graph &graph,
         int startNode,
         int targetNode,
-        double maxSpeedKmh)
+        double maxSpeedKmh,
+        double hourOfDay,
+        AlgorithmTrace *traceOut)
     {
         PathResult res;
         int n = graph.getNodeCount();
@@ -33,10 +37,30 @@ namespace dhaka
             return res;
         }
 
+        if (traceOut)
+        {
+            traceOut->clear();
+            traceOut->type = TraceType::ROUTING_ASTAR;
+            std::ostringstream titleSs;
+            titleSs << "A* Shortest Path: Node " << startNode << " -> Node " << targetNode;
+            traceOut->title = titleSs.str();
+        }
+
         if (startNode == targetNode)
         {
             res.found = true;
             res.nodePath = {startNode};
+            if (traceOut)
+            {
+                AlgorithmStep step;
+                step.type = TraceType::ROUTING_ASTAR;
+                step.activeNodeId = startNode;
+                step.targetNodeId = targetNode;
+                step.settledNodeIds = {startNode};
+                step.currentPathNodeIds = {startNode};
+                step.narration = "Start and target nodes are identical. Vehicle is already at destination.";
+                traceOut->addStep(step);
+            }
             return res;
         }
 
@@ -58,7 +82,25 @@ namespace dhaka
         std::priority_queue<AStarNode, std::vector<AStarNode>, std::greater<AStarNode>> openSet;
 
         gCost[startNode] = 0.0;
-        openSet.push({startNode, 0.0, heuristic(startNode)});
+        double startH = heuristic(startNode);
+        openSet.push({startNode, 0.0, startH});
+
+        if (traceOut)
+        {
+            AlgorithmStep step;
+            step.type = TraceType::ROUTING_ASTAR;
+            step.activeNodeId = startNode;
+            step.targetNodeId = targetNode;
+            step.frontierNodeIds = {startNode};
+            step.currentCost = 0.0;
+            step.heuristicCost = startH;
+            std::ostringstream ss;
+            ss << "Initialized A* from Node #" << startNode << " (" << graph.getNode(startNode).name
+               << ") targeting Node #" << targetNode << " (" << graph.getNode(targetNode).name
+               << "). Initial heuristic h(s) = " << std::fixed << std::setprecision(1) << startH << "s.";
+            step.narration = ss.str();
+            traceOut->addStep(step);
+        }
 
         while (!openSet.empty())
         {
@@ -70,6 +112,31 @@ namespace dhaka
                 continue;
             closed[u] = true;
             res.nodesExplored++;
+
+            // Gather closed and open lists for snapshot
+            std::vector<int> closedList;
+            for (int i = 0; i < n; ++i)
+            {
+                if (closed[i])
+                    closedList.push_back(i);
+            }
+
+            if (traceOut && traceOut->steps.size() < 40)
+            {
+                AlgorithmStep step;
+                step.type = TraceType::ROUTING_ASTAR;
+                step.activeNodeId = u;
+                step.targetNodeId = targetNode;
+                step.settledNodeIds = closedList;
+                step.currentCost = gCost[u];
+                step.heuristicCost = heuristic(u);
+                std::ostringstream ss;
+                ss << "Popped Node #" << u << " (" << graph.getNode(u).name << ") from priority queue. "
+                   << "Elapsed g = " << std::fixed << std::setprecision(1) << gCost[u] << "s, "
+                   << "estimated remaining h = " << heuristic(u) << "s (f = " << (gCost[u] + heuristic(u)) << "s).";
+                step.narration = ss.str();
+                traceOut->addStep(step);
+            }
 
             if (u == targetNode)
             {
@@ -89,7 +156,7 @@ namespace dhaka
                 if (closed[v])
                     continue;
 
-                double edgeTravelTime = edge.getTravelTimeSeconds();
+                double edgeTravelTime = edge.getTravelTimeSeconds(hourOfDay);
                 if (std::isinf(edgeTravelTime))
                     continue;
 
@@ -100,8 +167,27 @@ namespace dhaka
                     gCost[v] = tentativeG;
                     parentNode[v] = u;
                     parentEdge[v] = edgeId;
-                    double f = tentativeG + heuristic(v);
+                    double h = heuristic(v);
+                    double f = tentativeG + h;
                     openSet.push({v, tentativeG, f});
+
+                    if (traceOut && traceOut->steps.size() < 40)
+                    {
+                        AlgorithmStep step;
+                        step.type = TraceType::ROUTING_ASTAR;
+                        step.activeNodeId = u;
+                        step.targetNodeId = targetNode;
+                        step.activeEdgeId = edgeId;
+                        step.settledNodeIds = closedList;
+                        step.currentCost = tentativeG;
+                        step.heuristicCost = h;
+                        std::ostringstream ss;
+                        ss << "Relaxed edge (" << edge.roadName << ") to Node #" << v
+                           << ": new travel time g = " << std::fixed << std::setprecision(1) << tentativeG
+                           << "s (congestion " << edge.congestionFactor << "x).";
+                        step.narration = ss.str();
+                        traceOut->addStep(step);
+                    }
                 }
             }
         }
@@ -118,7 +204,7 @@ namespace dhaka
             if (edgeId != -1)
             {
                 res.edgePath.push_back(edgeId);
-                res.totalTravelTimeSeconds += graph.getEdge(edgeId).getTravelTimeSeconds();
+                res.totalTravelTimeSeconds += graph.getEdge(edgeId).getTravelTimeSeconds(hourOfDay);
                 res.totalDistanceMeters += graph.getEdge(edgeId).lengthMeters;
             }
             curr = parentNode[curr];
@@ -127,15 +213,34 @@ namespace dhaka
         std::reverse(res.nodePath.begin(), res.nodePath.end());
         std::reverse(res.edgePath.begin(), res.edgePath.end());
 
+        if (traceOut)
+        {
+            AlgorithmStep step;
+            step.type = TraceType::ROUTING_ASTAR;
+            step.activeNodeId = targetNode;
+            step.targetNodeId = targetNode;
+            step.settledNodeIds = res.nodePath;
+            step.currentPathNodeIds = res.nodePath;
+            step.currentCost = res.totalTravelTimeSeconds;
+            std::ostringstream ss;
+            ss << "A* converged! Optimal path settled across " << res.nodePath.size()
+               << " intersections. Total estimated travel time: "
+               << std::fixed << std::setprecision(1) << res.totalTravelTimeSeconds << "s ("
+               << static_cast<int>(res.totalDistanceMeters) << "m).";
+            step.narration = ss.str();
+            traceOut->addStep(step);
+        }
+
         return res;
     }
 
     PathResult Pathfinding::findPathDijkstra(
         const Graph &graph,
         int startNode,
-        int targetNode)
+        int targetNode,
+        double hourOfDay,
+        AlgorithmTrace *traceOut)
     {
-        // Dijkstra is equivalent to A* with h(u) = 0
         PathResult res;
         int n = graph.getNodeCount();
 
@@ -188,7 +293,7 @@ namespace dhaka
                 if (visited[v])
                     continue;
 
-                double edgeCost = edge.getTravelTimeSeconds();
+                double edgeCost = edge.getTravelTimeSeconds(hourOfDay);
                 if (std::isinf(edgeCost))
                     continue;
 
@@ -213,7 +318,7 @@ namespace dhaka
             if (edgeId != -1)
             {
                 res.edgePath.push_back(edgeId);
-                res.totalTravelTimeSeconds += graph.getEdge(edgeId).getTravelTimeSeconds();
+                res.totalTravelTimeSeconds += graph.getEdge(edgeId).getTravelTimeSeconds(hourOfDay);
                 res.totalDistanceMeters += graph.getEdge(edgeId).lengthMeters;
             }
             curr = parentNode[curr];
@@ -227,7 +332,8 @@ namespace dhaka
 
     std::vector<double> Pathfinding::dijkstraSingleSource(
         const Graph &graph,
-        int startNode)
+        int startNode,
+        double hourOfDay)
     {
         int n = graph.getNodeCount();
         std::vector<double> dist(n, std::numeric_limits<double>::infinity());
@@ -260,7 +366,7 @@ namespace dhaka
                 if (visited[v])
                     continue;
 
-                double cost = edge.getTravelTimeSeconds();
+                double cost = edge.getTravelTimeSeconds(hourOfDay);
                 if (std::isinf(cost))
                     continue;
 

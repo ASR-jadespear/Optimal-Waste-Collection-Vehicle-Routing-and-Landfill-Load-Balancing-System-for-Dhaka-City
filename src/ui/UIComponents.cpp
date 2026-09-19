@@ -20,7 +20,10 @@ namespace dhaka
             "assets/fonts/arial.ttf",
             "assets/fonts/arial.otf",
             "C:/Windows/Fonts/arial.ttf",
-            "C:/Windows/Fonts/Arial.ttf"};
+            "C:/Windows/Fonts/Arial.ttf",
+            "/usr/share/fonts/urw-base35/NimbusSans-Regular.otf",
+            "/usr/share/fonts/open-sans/OpenSans-Regular.ttf",
+            "/usr/share/fonts/google-noto/NotoSans-Regular.ttf"};
 
         for (const auto &p : fontCandidates)
         {
@@ -79,6 +82,47 @@ namespace dhaka
         else
         {
             return MeasureText(text, static_cast<int>(fontSize));
+        }
+    }
+
+    void UIComponents::drawDashedLine(Vector2 start, Vector2 end, float thick, float dashLen, Color color)
+    {
+        float dx = end.x - start.x;
+        float dy = end.y - start.y;
+        float totalLen = std::sqrt(dx * dx + dy * dy);
+        if (totalLen <= 0.001f)
+            return;
+
+        float ux = dx / totalLen;
+        float uy = dy / totalLen;
+
+        float current = 0.0f;
+        bool draw = true;
+
+        while (current < totalLen)
+        {
+            float next = std::min(totalLen, current + dashLen);
+            if (draw)
+            {
+                Vector2 p1 = {start.x + ux * current, start.y + uy * current};
+                Vector2 p2 = {start.x + ux * next, start.y + uy * next};
+                DrawLineEx(p1, p2, thick, color);
+            }
+            current = next;
+            draw = !draw;
+        }
+    }
+
+    void UIComponents::drawRadialGauge(Vector2 center, float innerRadius, float outerRadius, float percentage, Color barColor, Color bgColor)
+    {
+        percentage = std::clamp(percentage, 0.0f, 100.0f);
+        // Draw background ring
+        DrawRing(center, innerRadius, outerRadius, 0.0f, 360.0f, 32, bgColor);
+        // Draw progress arc
+        float angle = (percentage / 100.0f) * 360.0f;
+        if (angle > 1.0f)
+        {
+            DrawRing(center, innerRadius, outerRadius, 0.0f, angle, 32, barColor);
         }
     }
 
@@ -150,12 +194,13 @@ namespace dhaka
     void UIComponents::drawTooltip(Vector2 pos, const std::string &title,
                                    const std::vector<std::pair<std::string, std::string>> &fields)
     {
-        float width = 230.0f;
-        float height = 30.0f + fields.size() * 18.0f;
+        float width = 240.0f;
+        float height = 32.0f + fields.size() * 18.0f;
         if (pos.x + width > GetScreenWidth() - 10)
             pos.x = GetScreenWidth() - width - 10;
         if (pos.y + height > GetScreenHeight() - 10)
             pos.y = GetScreenHeight() - height - 10;
+
         DrawRectangleRounded({pos.x, pos.y, width, height}, 0.1f, 4, {18, 22, 32, 245});
         DrawRectangleRoundedLinesEx({pos.x, pos.y, width, height}, 0.1f, 4, 1.2f, COLOR_CYAN);
         drawText(title.c_str(), pos.x + 10.0f, pos.y + 8.0f, 13.0f, COLOR_CYAN);
@@ -169,34 +214,64 @@ namespace dhaka
         }
     }
 
-    bool UIComponents::drawTitleBar(Rectangle bounds, bool isPaused, double simTimeSec, float speedMul, bool isLiveMode)
+    bool UIComponents::drawTitleBar(Rectangle bounds, bool isPaused, double simTimeSec, float speedMul, bool &isLiveMode)
     {
         DrawRectangleRec(bounds, PANEL_BG);
         DrawLineEx({bounds.x, bounds.y + bounds.height - 1.0f}, {bounds.x + bounds.width, bounds.y + bounds.height - 1.0f}, 1.0f, PANEL_BORDER);
 
+        // Left Console Icon & Title
         DrawCircle(static_cast<int>(bounds.x + 24), static_cast<int>(bounds.y + bounds.height / 2.0f), 8.0f, COLOR_CYAN);
         drawText("Dhaka SWM command console", bounds.x + 40.0f, bounds.y + bounds.height / 2.0f - 8.0f, 16.0f, TEXT_PRIMARY);
 
+        // Right side: Interactive Live/Simulated toggle pill
+        float toggleW = 124.0f;
+        float toggleH = 26.0f;
+        float toggleX = bounds.x + bounds.width - 340.0f;
+        float toggleY = bounds.y + (bounds.height - toggleH) / 2.0f;
+        Rectangle toggleBounds = {toggleX, toggleY, toggleW, toggleH};
+
+        bool toggleHovered = CheckCollisionPointRec(GetMousePosition(), toggleBounds);
+        if (toggleHovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+        {
+            isLiveMode = !isLiveMode;
+        }
+
+        DrawRectangleRounded(toggleBounds, 0.4f, 4, {22, 28, 40, 255});
+        DrawRectangleRoundedLinesEx(toggleBounds, 0.4f, 4, 1.2f, toggleHovered ? COLOR_CYAN : PANEL_BORDER);
+
+        if (isLiveMode)
+        {
+            DrawRectangleRounded({toggleX + 2.0f, toggleY + 2.0f, toggleW * 0.48f, toggleH - 4.0f}, 0.35f, 4, COLOR_GREEN);
+            drawText("LIVE", toggleX + 12.0f, toggleY + 6.0f, 11.0f, WHITE);
+            drawText("Sim", toggleX + toggleW * 0.55f, toggleY + 6.0f, 11.0f, TEXT_MUTED);
+        }
+        else
+        {
+            DrawRectangleRounded({toggleX + toggleW * 0.50f, toggleY + 2.0f, toggleW * 0.48f, toggleH - 4.0f}, 0.35f, 4, COLOR_CYAN);
+            drawText("Live", toggleX + 10.0f, toggleY + 6.0f, 11.0f, TEXT_MUTED);
+            drawText("SIM", toggleX + toggleW * 0.56f, toggleY + 6.0f, 11.0f, WHITE);
+        }
+
+        // Current sim clock: e.g. "14:32, Tue"
         int currentDay = static_cast<int>(simTimeSec / 86400) % 7;
         int hour = static_cast<int>(std::fmod(simTimeSec, 86400) / 3600);
         int minute = static_cast<int>(std::fmod(simTimeSec, 3600) / 60);
-
         const char *days[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
+
         char timeStr[128];
-        std::snprintf(timeStr, sizeof(timeStr), "%s | %02d:%02d, %s", isLiveMode ? "Live" : "Simulated", hour, minute, days[currentDay]);
+        std::snprintf(timeStr, sizeof(timeStr), "%02d:%02d, %s", hour, minute, days[currentDay]);
+        drawText(timeStr, toggleX + toggleW + 18.0f, bounds.y + bounds.height / 2.0f - 7.0f, 14.0f, TEXT_PRIMARY);
 
-        int timeW = measureText(timeStr, 14.0f);
-        drawText(timeStr, bounds.x + bounds.width - 100.0f - timeW, bounds.y + bounds.height / 2.0f - 7.0f, 14.0f, TEXT_MUTED);
-
-        Rectangle btnBounds = {bounds.x + bounds.width - 50.0f, bounds.y + bounds.height / 2.0f - 12.0f, 24.0f, 24.0f};
+        // Play / Pause global button
+        Rectangle btnBounds = {bounds.x + bounds.width - 50.0f, bounds.y + (bounds.height - 24.0f) / 2.0f, 26.0f, 24.0f};
         bool hovered = CheckCollisionPointRec(GetMousePosition(), btnBounds);
         bool clicked = hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
 
         Color iconColor = hovered ? TEXT_PRIMARY : TEXT_MUTED;
         if (isPaused)
         {
-            Vector2 p1 = {btnBounds.x + 4.0f, btnBounds.y + 4.0f};
-            Vector2 p2 = {btnBounds.x + 4.0f, btnBounds.y + 20.0f};
+            Vector2 p1 = {btnBounds.x + 6.0f, btnBounds.y + 4.0f};
+            Vector2 p2 = {btnBounds.x + 6.0f, btnBounds.y + 20.0f};
             Vector2 p3 = {btnBounds.x + 20.0f, btnBounds.y + 12.0f};
             DrawTriangle(p1, p2, p3, iconColor);
         }
@@ -205,6 +280,7 @@ namespace dhaka
             DrawRectangle(static_cast<int>(btnBounds.x + 6), static_cast<int>(btnBounds.y + 4), 4, 16, iconColor);
             DrawRectangle(static_cast<int>(btnBounds.x + 14), static_cast<int>(btnBounds.y + 4), 4, 16, iconColor);
         }
+
         return clicked;
     }
 
@@ -214,14 +290,19 @@ namespace dhaka
         DrawLineEx({bounds.x, bounds.y + bounds.height - 1.0f}, {bounds.x + bounds.width, bounds.y + bounds.height - 1.0f}, 1.0f, PANEL_BORDER);
 
         int clickedStage = -1;
-        const char *labels[] = {"Road network", "Routing\nDijkstra / A*", "Sequencing\nGreedy", "Load select\nKnapsack", "Landfill balance\nMax-flow"};
+        const char *labels[] = {
+            "Road network\nBase G(V,E,t)",
+            "Routing\nDijkstra / A*",
+            "Sequencing\nGreedy",
+            "Load select\nKnapsack",
+            "Landfill balance\nMax-flow"};
         int numStages = 5;
         float gap = 8.0f;
-        float btnWidth = (bounds.width - (numStages - 1) * gap) / numStages;
+        float btnWidth = (bounds.width - (numStages - 1) * gap - 24.0f) / numStages;
 
         for (int i = 0; i < numStages; i++)
         {
-            Rectangle btnRec = {bounds.x + i * (btnWidth + gap), bounds.y + 4.0f, btnWidth, bounds.height - 8.0f};
+            Rectangle btnRec = {bounds.x + 12.0f + i * (btnWidth + gap), bounds.y + 4.0f, btnWidth, bounds.height - 8.0f};
             bool hovered = CheckCollisionPointRec(GetMousePosition(), btnRec);
             if (hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
             {
@@ -231,7 +312,8 @@ namespace dhaka
             Color bg = (i == activeStage) ? Color{37, 99, 235, 255} : (hovered ? Color{45, 55, 75, 255} : PANEL_BG);
             Color textCol = (i == activeStage) ? WHITE : TEXT_MUTED;
 
-            DrawRectangleRounded(btnRec, 0.1f, 4, bg);
+            DrawRectangleRounded(btnRec, 0.12f, 4, bg);
+            DrawRectangleRoundedLinesEx(btnRec, 0.12f, 4, 1.2f, (i == activeStage) ? Color{96, 165, 250, 255} : PANEL_BORDER);
 
             std::string label = labels[i];
             size_t nlPos = label.find('\n');
@@ -242,7 +324,7 @@ namespace dhaka
                 int w1 = measureText(line1.c_str(), 12.0f);
                 int w2 = measureText(line2.c_str(), 10.0f);
                 drawText(line1.c_str(), btnRec.x + (btnWidth - w1) / 2.0f, btnRec.y + 6.0f, 12.0f, textCol);
-                drawText(line2.c_str(), btnRec.x + (btnWidth - w2) / 2.0f, btnRec.y + 20.0f, 10.0f, textCol);
+                drawText(line2.c_str(), btnRec.x + (btnWidth - w2) / 2.0f, btnRec.y + 21.0f, 10.0f, (i == activeStage) ? Color{219, 234, 254, 255} : COLOR_GRAY);
             }
             else
             {
@@ -253,33 +335,58 @@ namespace dhaka
         return clickedStage;
     }
 
-    void UIComponents::drawIconRail(Rectangle bounds, bool layerFlags[4])
+    int UIComponents::drawIconRail(Rectangle bounds, bool layerFlags[4], int alertCount, int activePopover)
     {
         DrawRectangleRec(bounds, {18, 22, 32, 255});
+        DrawLineEx({bounds.x + bounds.width - 1.0f, bounds.y}, {bounds.x + bounds.width - 1.0f, bounds.y + bounds.height}, 1.0f, PANEL_BORDER);
 
-        const char *icons[] = {"~", "*", "!", "i"};
-        float btnSize = 48.0f;
-        float gap = 8.0f;
-        float startY = bounds.y + 8.0f;
+        int clickedAction = 0;
+        float btnSize = 44.0f;
+        float gap = 12.0f;
+        float startY = bounds.y + 12.0f;
 
-        for (int i = 0; i < 4; i++)
+        // 1. Layers Toggle Icon
+        Rectangle recLayers = {bounds.x + (bounds.width - btnSize) / 2.0f, startY, btnSize, btnSize};
+        bool hLayers = CheckCollisionPointRec(GetMousePosition(), recLayers);
+        if (hLayers && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+            clickedAction = 1;
+
+        DrawRectangleRounded(recLayers, 0.25f, 4, activePopover == 1 ? Color{37, 99, 235, 200} : (hLayers ? Color{45, 55, 75, 255} : Color{25, 30, 42, 255}));
+        DrawRectangleRoundedLinesEx(recLayers, 0.25f, 4, 1.2f, activePopover == 1 ? COLOR_CYAN : PANEL_BORDER);
+        // Draw stacked layers symbol
+        drawText("LYR", recLayers.x + 9.0f, recLayers.y + 14.0f, 12.0f, activePopover == 1 ? WHITE : (hLayers ? TEXT_PRIMARY : COLOR_CYAN));
+
+        // 2. Settings Gear Icon
+        Rectangle recSettings = {bounds.x + (bounds.width - btnSize) / 2.0f, startY + (btnSize + gap), btnSize, btnSize};
+        bool hSettings = CheckCollisionPointRec(GetMousePosition(), recSettings);
+        if (hSettings && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+            clickedAction = 2;
+
+        DrawRectangleRounded(recSettings, 0.25f, 4, activePopover == 2 ? Color{37, 99, 235, 200} : (hSettings ? Color{45, 55, 75, 255} : Color{25, 30, 42, 255}));
+        DrawRectangleRoundedLinesEx(recSettings, 0.25f, 4, 1.2f, activePopover == 2 ? COLOR_CYAN : PANEL_BORDER);
+        drawText("CFG", recSettings.x + 9.0f, recSettings.y + 14.0f, 12.0f, activePopover == 2 ? WHITE : (hSettings ? TEXT_PRIMARY : TEXT_MUTED));
+
+        // 3. Alerts Bell Icon (with badge)
+        Rectangle recAlerts = {bounds.x + (bounds.width - btnSize) / 2.0f, startY + (btnSize + gap) * 2.0f, btnSize, btnSize};
+        bool hAlerts = CheckCollisionPointRec(GetMousePosition(), recAlerts);
+        if (hAlerts && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+            clickedAction = 3;
+
+        DrawRectangleRounded(recAlerts, 0.25f, 4, activePopover == 3 ? Color{37, 99, 235, 200} : (hAlerts ? Color{45, 55, 75, 255} : Color{25, 30, 42, 255}));
+        DrawRectangleRoundedLinesEx(recAlerts, 0.25f, 4, 1.2f, activePopover == 3 ? COLOR_GOLD : PANEL_BORDER);
+        drawText("ALT", recAlerts.x + 9.0f, recAlerts.y + 14.0f, 12.0f, alertCount > 0 ? COLOR_GOLD : (activePopover == 3 ? WHITE : TEXT_MUTED));
+
+        // Badge count for alerts
+        if (alertCount > 0)
         {
-            Rectangle btnRec = {bounds.x + (bounds.width - btnSize) / 2.0f, startY + i * (btnSize + gap), btnSize, btnSize};
-            bool hovered = CheckCollisionPointRec(GetMousePosition(), btnRec);
-            if (hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
-            {
-                layerFlags[i] = !layerFlags[i];
-            }
-
-            Color iconColor = layerFlags[i] ? COLOR_CYAN : TEXT_MUTED;
-            if (hovered)
-            {
-                DrawRectangleRounded(btnRec, 0.2f, 4, {45, 55, 75, 255});
-            }
-
-            int w = measureText(icons[i], 24.0f);
-            drawText(icons[i], btnRec.x + (btnSize - w) / 2.0f, btnRec.y + (btnSize - 24.0f) / 2.0f, 24.0f, iconColor);
+            char bBuf[16];
+            std::snprintf(bBuf, sizeof(bBuf), "%d", alertCount);
+            DrawCircle(static_cast<int>(recAlerts.x + recAlerts.width - 4.0f), static_cast<int>(recAlerts.y + 4.0f), 8.0f, COLOR_RED);
+            int tw = measureText(bBuf, 10.0f);
+            drawText(bBuf, recAlerts.x + recAlerts.width - 4.0f - tw * 0.5f, recAlerts.y - 2.0f, 10.0f, WHITE);
         }
+
+        return clickedAction;
     }
 
     bool UIComponents::drawTabButton(Rectangle bounds, const char *text, bool active)
@@ -298,37 +405,70 @@ namespace dhaka
         return clicked;
     }
 
+    int UIComponents::drawStepControls(Rectangle bounds, bool isPlaying, int currentStep, int totalSteps)
+    {
+        int action = 0; // 1=prev, 2=play, 3=next, 4=reset
+        float btnSize = 28.0f;
+        float gap = 6.0f;
+        float startX = bounds.x;
+        float centerY = bounds.y + bounds.height / 2.0f;
+
+        // Reset button ⏮
+        Rectangle rReset = {startX, centerY - btnSize / 2.0f, btnSize, btnSize};
+        if (drawButton(rReset, "|<"))
+            action = 4;
+        startX += btnSize + gap;
+
+        // Prev step ◀
+        Rectangle rPrev = {startX, centerY - btnSize / 2.0f, btnSize, btnSize};
+        if (drawButton(rPrev, "<"))
+            action = 1;
+        startX += btnSize + gap;
+
+        // Play / Pause auto-step ▶ / ||
+        Rectangle rPlay = {startX, centerY - btnSize / 2.0f, btnSize, btnSize};
+        if (drawButton(rPlay, isPlaying ? "||" : ">", isPlaying))
+            action = 2;
+        startX += btnSize + gap;
+
+        // Next step ⏭
+        Rectangle rNext = {startX, centerY - btnSize / 2.0f, btnSize, btnSize};
+        if (drawButton(rNext, ">|"))
+            action = 3;
+        startX += btnSize + gap + 4.0f;
+
+        // Step counter text: e.g. "Step 14/42"
+        char stepBuf[32];
+        if (totalSteps > 0)
+        {
+            std::snprintf(stepBuf, sizeof(stepBuf), "Step %d/%d", currentStep + 1, totalSteps);
+        }
+        else
+        {
+            std::snprintf(stepBuf, sizeof(stepBuf), "Step 0/0");
+        }
+        drawText(stepBuf, startX, centerY - 6.0f, 12.0f, COLOR_CYAN);
+
+        return action;
+    }
+
     float UIComponents::drawTimelineScrubber(Rectangle bounds, float normalizedPos, bool isPaused)
     {
         float newPos = normalizedPos;
-        float btnSize = 28.0f;
-        float gap = 4.0f;
-        float startX = bounds.x + 4.0f;
         float centerY = bounds.y + bounds.height / 2.0f;
+        float startX = bounds.x;
 
-        const char *btnLabels[] = {"|<", (isPaused ? ">" : "||"), ">|"};
-        for (int i = 0; i < 3; i++)
-        {
-            Rectangle btnRec = {startX + i * (btnSize + gap), centerY - btnSize / 2.0f, btnSize, btnSize};
-            bool hovered = CheckCollisionPointRec(GetMousePosition(), btnRec);
-            DrawRectangleRounded(btnRec, 0.2f, 4, hovered ? Color{45, 55, 75, 255} : PANEL_BG);
-            int w = measureText(btnLabels[i], 12.0f);
-            drawText(btnLabels[i], btnRec.x + (btnSize - w) / 2.0f, btnRec.y + (btnSize - 12.0f) / 2.0f, 12.0f, TEXT_PRIMARY);
-        }
-
-        startX += 3.0f * (btnSize + gap) + 8.0f;
-
-        int labelW = measureText("timeline", 12.0f);
         drawText("timeline", startX, centerY - 6.0f, 12.0f, TEXT_MUTED);
-        startX += labelW + 8.0f;
+        int labelW = measureText("timeline", 12.0f);
+        startX += labelW + 10.0f;
 
-        float trackWidth = (bounds.x + bounds.width) - startX - 16.0f;
+        float trackWidth = (bounds.x + bounds.width) - startX - 8.0f;
         float trackX = startX;
 
-        DrawLineEx({trackX, centerY}, {trackX + trackWidth, centerY}, 2.0f, PANEL_BORDER);
+        DrawLineEx({trackX, centerY}, {trackX + trackWidth, centerY}, 3.0f, PANEL_BORDER);
 
         float knobX = trackX + normalizedPos * trackWidth;
-        Rectangle trackArea = {trackX, centerY - 10.0f, trackWidth, 20.0f};
+        Rectangle trackArea = {trackX, centerY - 12.0f, trackWidth, 24.0f};
 
         if (CheckCollisionPointRec(GetMousePosition(), trackArea) && IsMouseButtonDown(MOUSE_BUTTON_LEFT))
         {
@@ -338,24 +478,25 @@ namespace dhaka
             knobX = trackX + newPos * trackWidth;
         }
 
-        DrawCircle(static_cast<int>(knobX), static_cast<int>(centerY), 6.0f, COLOR_CYAN);
+        DrawCircle(static_cast<int>(knobX), static_cast<int>(centerY), 7.0f, COLOR_CYAN);
+        DrawCircleLines(static_cast<int>(knobX), static_cast<int>(centerY), 8.0f, WHITE);
 
         return newPos;
     }
 
-    bool UIComponents::drawDisruptionButton(Rectangle bounds, const char *icon, const char *label)
+    bool UIComponents::drawDisruptionButton(Rectangle bounds, const char *icon, const char *label, bool active)
     {
         bool hovered = CheckCollisionPointRec(GetMousePosition(), bounds);
         bool clicked = hovered && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
 
-        Color bg = {20, 20, 25, 255};
-        Color border = hovered ? COLOR_GOLD : PANEL_BORDER;
+        Color bg = active ? Color{50, 20, 20, 255} : (hovered ? Color{35, 40, 52, 255} : Color{20, 24, 34, 255});
+        Color border = active ? COLOR_RED : (hovered ? COLOR_GOLD : PANEL_BORDER);
 
         DrawRectangleRounded(bounds, 0.15f, 4, bg);
-        DrawRectangleRoundedLinesEx(bounds, 0.15f, 4, 1.2f, border);
+        DrawRectangleRoundedLinesEx(bounds, 0.15f, 4, active ? 2.0f : 1.2f, border);
 
-        drawText(icon, bounds.x + 8.0f, bounds.y + (bounds.height - 14.0f) / 2.0f, 14.0f, COLOR_GOLD);
-        drawText(label, bounds.x + 28.0f, bounds.y + (bounds.height - 12.0f) / 2.0f, 12.0f, TEXT_PRIMARY);
+        drawText(icon, bounds.x + 8.0f, bounds.y + (bounds.height - 14.0f) / 2.0f, 14.0f, active ? COLOR_RED : COLOR_GOLD);
+        drawText(label, bounds.x + 28.0f, bounds.y + (bounds.height - 12.0f) / 2.0f, 12.0f, active ? WHITE : TEXT_PRIMARY);
 
         return clicked;
     }
@@ -387,7 +528,7 @@ namespace dhaka
             knobX = bounds.x + newNorm * bounds.width;
         }
 
-        DrawCircle(static_cast<int>(knobX), static_cast<int>(trackY), 5.0f, COLOR_CYAN);
+        DrawCircle(static_cast<int>(knobX), static_cast<int>(trackY), 6.0f, COLOR_CYAN);
         return newPos;
     }
 

@@ -1,8 +1,11 @@
 #include "algorithms/MaxFlow.hpp"
+#include "algorithms/AlgorithmTrace.hpp"
 #include <queue>
 #include <cmath>
 #include <limits>
 #include <algorithm>
+#include <sstream>
+#include <iomanip>
 
 namespace dhaka
 {
@@ -35,7 +38,6 @@ namespace dhaka
 
         while (true)
         {
-            // BFS to find shortest augmenting path in terms of number of edges
             std::vector<int> parentEdge(totalNodes, -1);
             std::vector<bool> visited(totalNodes, false);
             std::queue<int> q;
@@ -66,13 +68,11 @@ namespace dhaka
                 }
             }
 
-            // If sink not reachable, no more augmenting paths
             if (!visited[sink])
             {
                 break;
             }
 
-            // Find bottleneck residual capacity along augmenting path
             double bottleneck = std::numeric_limits<double>::infinity();
             int curr = sink;
             while (curr != source)
@@ -83,7 +83,6 @@ namespace dhaka
                 curr = edges[edgeIdx].u;
             }
 
-            // Augment flow along path
             curr = sink;
             while (curr != source)
             {
@@ -107,9 +106,18 @@ namespace dhaka
         const std::vector<TruckDemand> &pendingTrucks,
         const Landfill &aminbazar,
         const Landfill &matuail,
-        bool enforceEqualBalance)
+        bool enforceEqualBalance,
+        AlgorithmTrace *traceOut)
     {
         LandfillAssignmentResult result;
+
+        if (traceOut)
+        {
+            traceOut->clear();
+            traceOut->type = TraceType::LANDFILL_MAXFLOW;
+            traceOut->title = "Edmonds-Karp Max-Flow Landfill Load Balancing";
+        }
+
         if (pendingTrucks.empty())
             return result;
 
@@ -130,16 +138,27 @@ namespace dhaka
         double capAmin = aminbazar.getRemainingCapacity();
         double capMat = matuail.getRemainingCapacity();
 
-        // Determine target quotas for flow balance
         double quotaAmin = capAmin;
         double quotaMat = capMat;
 
         if (enforceEqualBalance && capAmin > 0.0 && capMat > 0.0)
         {
-            // Enforce balanced split (50% each + buffer for non-divisible trucks)
             double idealHalf = totalWaste * 0.55;
             quotaAmin = std::min(capAmin, std::max(idealHalf, 1000.0));
             quotaMat = std::min(capMat, std::max(idealHalf, 1000.0));
+        }
+
+        if (traceOut)
+        {
+            AlgorithmStep step;
+            step.type = TraceType::LANDFILL_MAXFLOW;
+            step.totalAugmentedFlow = 0.0;
+            std::ostringstream ss;
+            ss << "Formulated residual flow network: " << numTrucks << " trucks needing disposal ("
+               << static_cast<int>(totalWaste) << " kg total). Aminbazar quota: " << static_cast<int>(quotaAmin)
+               << " kg, Matuail quota: " << static_cast<int>(quotaMat) << " kg.";
+            step.narration = ss.str();
+            traceOut->addStep(step);
         }
 
         std::vector<FlowEdge> edges;
@@ -158,7 +177,6 @@ namespace dhaka
             int truckNode = truckOffset + i;
             double w = pendingTrucks[i].wasteKg;
 
-            // Trucks can flow to either landfill, with capacity equal to their load
             if (capAmin > 0.0)
             {
                 addFlowEdge(truckNode, aminbazarNode, w, edges, adj);
@@ -176,15 +194,12 @@ namespace dhaka
         int matToSinkEdge = static_cast<int>(edges.size());
         addFlowEdge(matuailNode, sink, quotaMat, edges, adj);
 
-        // Execute Edmonds-Karp
         int pathCount = 0;
         result.totalWasteAllocatedKg = edmondsKarp(source, sink, totalNodes, edges, adj, pathCount);
         result.augmentingPathsCount = pathCount;
 
-        // Check if any trucks were left unallocated due to strict quota, and expand if capacity exists
         if (result.totalWasteAllocatedKg < totalWaste && (capAmin > quotaAmin || capMat > quotaMat))
         {
-            // Expand quota to true physical limit for secondary pass
             edges[aminToSinkEdge].capacity = capAmin;
             edges[matToSinkEdge].capacity = capMat;
             int secondaryPaths = 0;
@@ -192,7 +207,7 @@ namespace dhaka
             result.augmentingPathsCount += secondaryPaths;
         }
 
-        // Inspect flow on truck->landfill edges to determine assignments
+        // Trace out augmenting paths inspection
         for (int i = 0; i < numTrucks; ++i)
         {
             int truckNode = truckOffset + i;
@@ -214,29 +229,36 @@ namespace dhaka
                 }
             }
 
-            if (flowToAmin > flowToMat)
+            int assignedLF = (flowToAmin > flowToMat) ? 0 : ((flowToMat > flowToAmin) ? 1 : pendingTrucks[i].preferredLandfillId);
+            result.truckToLandfillAssignments[truckId] = assignedLF;
+
+            if (assignedLF == 0)
             {
-                result.truckToLandfillAssignments[truckId] = 0; // 0 = Aminbazar
                 result.aminbazarAllocatedKg += pendingTrucks[i].wasteKg;
-            }
-            else if (flowToMat > flowToAmin)
-            {
-                result.truckToLandfillAssignments[truckId] = 1; // 1 = Matuail
-                result.matuailAllocatedKg += pendingTrucks[i].wasteKg;
             }
             else
             {
-                // Tie or fallback: assign to preferred
-                int pref = pendingTrucks[i].preferredLandfillId;
-                result.truckToLandfillAssignments[truckId] = pref;
-                if (pref == 0)
-                {
-                    result.aminbazarAllocatedKg += pendingTrucks[i].wasteKg;
-                }
-                else
-                {
-                    result.matuailAllocatedKg += pendingTrucks[i].wasteKg;
-                }
+                result.matuailAllocatedKg += pendingTrucks[i].wasteKg;
+            }
+
+            if (traceOut)
+            {
+                AlgorithmStep step;
+                step.type = TraceType::LANDFILL_MAXFLOW;
+                step.activeVehicleId = truckId;
+                step.activeLandfillId = assignedLF;
+                step.bottleneckFlow = pendingTrucks[i].wasteKg;
+                step.totalAugmentedFlow = result.aminbazarAllocatedKg + result.matuailAllocatedKg;
+                step.isBindingEdge = (assignedLF == 0 && result.aminbazarAllocatedKg >= quotaAmin) ||
+                                     (assignedLF == 1 && result.matuailAllocatedKg >= quotaMat);
+
+                std::ostringstream ss;
+                ss << "Augmenting Path: Source -> Truck " << (truckId + 1) << " ("
+                   << static_cast<int>(pendingTrucks[i].wasteKg) << " kg) -> "
+                   << (assignedLF == 0 ? "Aminbazar" : "Matuail") << " -> Sink. "
+                   << (step.isBindingEdge ? "Landfill quota binding! Balance enforced." : "Flow absorbed.");
+                step.narration = ss.str();
+                traceOut->addStep(step);
             }
         }
 
@@ -245,13 +267,28 @@ namespace dhaka
         {
             double minAlloc = std::min(result.aminbazarAllocatedKg, result.matuailAllocatedKg);
             double maxAlloc = std::max(result.aminbazarAllocatedKg, result.matuailAllocatedKg);
-            result.balanceRatio = minAlloc / maxAlloc; // 1.0 is perfectly balanced
+            result.balanceRatio = minAlloc / maxAlloc;
             result.isBalanced = (result.balanceRatio >= 0.70);
         }
         else
         {
             result.balanceRatio = (result.totalWasteAllocatedKg == 0.0) ? 1.0 : 0.0;
             result.isBalanced = false;
+        }
+
+        if (traceOut)
+        {
+            AlgorithmStep step;
+            step.type = TraceType::LANDFILL_MAXFLOW;
+            step.totalAugmentedFlow = result.totalWasteAllocatedKg;
+            std::ostringstream ss;
+            ss << "Edmonds-Karp Max-Flow balanced: " << static_cast<int>(result.totalWasteAllocatedKg)
+               << " kg routed (" << static_cast<int>(result.aminbazarAllocatedKg) << " kg Aminbazar / "
+               << static_cast<int>(result.matuailAllocatedKg) << " kg Matuail). Balance ratio: "
+               << std::fixed << std::setprecision(1) << (result.balanceRatio * 100.0) << "% ("
+               << (result.isBalanced ? "Optimal 50/50" : "Capacity Constrained") << ").";
+            step.narration = ss.str();
+            traceOut->addStep(step);
         }
 
         return result;

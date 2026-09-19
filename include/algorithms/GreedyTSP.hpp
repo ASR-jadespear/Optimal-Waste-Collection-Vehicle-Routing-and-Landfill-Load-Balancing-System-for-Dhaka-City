@@ -2,6 +2,7 @@
 
 #include "core/CollectionPoint.hpp"
 #include "core/Graph.hpp"
+#include "algorithms/AlgorithmTrace.hpp"
 #include <vector>
 
 namespace dhaka
@@ -24,7 +25,9 @@ namespace dhaka
             const std::vector<CollectionPoint> &allBins,
             const Graph &graph,
             double alpha = 1.5,
-            double beta = 1.0);
+            double beta = 1.0,
+            AlgorithmTrace *traceOut = nullptr,
+            int vehicleId = -1);
     };
 
 } // namespace dhaka

@@ -19,18 +19,40 @@ namespace dhaka
         bool isClosed = false;
         std::string roadName;
 
-        double getEffectiveSpeedKmh() const
+        double getTimeOfDayMultiplier(double hourOfDay) const
+        {
+            double h = std::fmod(hourOfDay, 24.0);
+            if (h < 0.0)
+                h += 24.0;
+
+            // Morning Peak: 08:00 - 11:00
+            if (h >= 8.0 && h < 11.0)
+                return 2.5;
+            // Evening Peak: 17:00 - 21:00
+            else if (h >= 17.0 && h < 21.0)
+                return 2.8;
+            // Day Off-Peak: 11:00 - 17:00
+            else if (h >= 11.0 && h < 17.0)
+                return 1.4;
+            // Night: 21:00 - 08:00 (Free flow)
+            else
+                return 1.0;
+        }
+
+        double getEffectiveSpeedKmh(double hourOfDay = 12.0) const
         {
             if (isClosed)
                 return 0.0;
-            return std::max(2.0, baseSpeedKmh / std::max(1.0, congestionFactor));
+            double diurnal = getTimeOfDayMultiplier(hourOfDay);
+            double totalCongestion = std::max(1.0, congestionFactor * diurnal);
+            return std::max(2.0, baseSpeedKmh / totalCongestion);
         }
 
-        double getTravelTimeSeconds() const
+        double getTravelTimeSeconds(double hourOfDay = 12.0) const
         {
             if (isClosed)
                 return std::numeric_limits<double>::infinity();
-            double speedMs = (getEffectiveSpeedKmh() * 1000.0) / 3600.0;
+            double speedMs = (getEffectiveSpeedKmh(hourOfDay) * 1000.0) / 3600.0;
             return lengthMeters / speedMs;
         }
     };

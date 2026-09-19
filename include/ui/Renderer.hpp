@@ -24,6 +24,26 @@ namespace dhaka
         RESULTS
     };
 
+    struct InlineRoadEditorState
+    {
+        bool active = false;
+        int edgeId = -1;
+        Vector2 screenPos = {0, 0};
+        float tempSpeed = 40.0f;
+        float tempCongestion = 1.0f;
+        bool tempClosed = false;
+    };
+
+    struct InlineBinEditorState
+    {
+        bool active = false;
+        int binId = -1; // -1 = creating new bin, >= 0 = editing existing bin
+        Vec2 worldPos = {0, 0};
+        Vector2 screenPos = {0, 0};
+        float capacityKg = 1500.0f;
+        float initialWasteKg = 600.0f;
+    };
+
     class Renderer
     {
     public:
@@ -34,8 +54,18 @@ namespace dhaka
         PipelineStage activeStage = PipelineStage::ROAD_NETWORK;
         RightPanelTab activeTab = RightPanelTab::LIVE_FEED;
 
-        // Icon Rail Layer Toggles: roads, bins, trucks, water
+        // Icon Rail Layer Toggles: [roads, bins, trucks, water]
         bool layerFlags[4] = {true, true, true, true};
+        bool showTrafficHeatmap = true;
+        bool showEdgeTravelTimes = true;
+        bool showNodeIds = false;
+
+        // Left Rail Popover: 0=none, 1=layers, 2=settings, 3=alerts
+        int activePopover = 0;
+
+        // Direct Map Inline Editors
+        InlineRoadEditorState roadEditor;
+        InlineBinEditorState binEditor;
 
         // Hover inspection
         int hoveredNodeId = -1;
@@ -50,11 +80,8 @@ namespace dhaka
         // Timeline scrubber position [0..1]
         float timelinePos = 0.0f;
 
-        // Live/Simulated toggle
-        bool isLiveMode = false;
-
-        // Right panel scroll offset for live feed
-        float liveFeedScrollOffset = 0.0f;
+        // Animation timers
+        float animWaveTimer = 0.0f;
 
         Renderer(SimulationEngine &engine, int screenWidth = 1440, int screenHeight = 900);
 
@@ -95,6 +122,11 @@ namespace dhaka
         void renderRightPanel_LiveFeed();
         void renderRightPanel_Parameters();
         void renderRightPanel_Results();
+
+        // Popovers and Inline Map Editors
+        void renderRailPopovers();
+        void renderInlineRoadEditor();
+        void renderInlineBinEditor();
 
         // Interactions
         void handleInteractions();

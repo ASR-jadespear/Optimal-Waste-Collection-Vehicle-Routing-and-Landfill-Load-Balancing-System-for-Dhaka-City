@@ -22,6 +22,7 @@ namespace dhaka
         static constexpr Color COLOR_GREEN = {16, 185, 129, 255};
         static constexpr Color COLOR_RED = {239, 68, 68, 255};
         static constexpr Color COLOR_PURPLE = {168, 85, 247, 255};
+        static constexpr Color COLOR_GRAY = {100, 116, 139, 255};
 
         // Font management (Arial)
         static Font fontArial;
@@ -31,7 +32,7 @@ namespace dhaka
         static void drawText(const char *text, float posX, float posY, float fontSize, Color color);
         static int measureText(const char *text, float fontSize);
 
-        // Retained generic widgets
+        // Generic & HUD widgets
         static void drawPanel(Rectangle bounds, const char *title = nullptr);
         static void drawProgressBar(Rectangle bounds, float percentage, Color barColor, const char *label);
         static bool drawButton(Rectangle bounds, const char *text, bool active = false);
@@ -40,31 +41,21 @@ namespace dhaka
         static void drawTooltip(Vector2 pos, const std::string &title,
                                 const std::vector<std::pair<std::string, std::string>> &fields);
 
-        // === NEW Pipeline-Stepper Widgets ===
-
-        // Title bar: 56px high, console name left, live/sim toggle + clock + play/pause right
-        // Returns true if play/pause was clicked
-        static bool drawTitleBar(Rectangle bounds, bool isPaused, double simTimeSec, float speedMul, bool isLiveMode);
-
-        // Pipeline stepper: 48px, 5 clickable stage buttons
-        // Returns clicked stage index (0-4) or -1 if none clicked
+        // Pipeline-Stepper Widgets
+        static bool drawTitleBar(Rectangle bounds, bool isPaused, double simTimeSec, float speedMul, bool &isLiveMode);
         static int drawPipelineStepper(Rectangle bounds, int activeStage);
-
-        // Left icon rail: 64px wide vertical strip with toggle icons
-        // layerFlags: [roads, bins, trucks, water] — toggles in/out
-        static void drawIconRail(Rectangle bounds, bool layerFlags[4]);
-
-        // Tab button for right panel header
+        static int drawIconRail(Rectangle bounds, bool layerFlags[4], int alertCount, int activePopover);
         static bool drawTabButton(Rectangle bounds, const char *text, bool active);
-
-        // Horizontal timeline scrubber. Returns new normalized position [0..1] if dragged, else current.
         static float drawTimelineScrubber(Rectangle bounds, float normalizedPos, bool isPaused);
-
-        // Disruption button with icon character
-        static bool drawDisruptionButton(Rectangle bounds, const char *icon, const char *label);
-
-        // Slider widget for parameters tab. Returns new value.
+        static bool drawDisruptionButton(Rectangle bounds, const char *icon, const char *label, bool active = false);
         static float drawSlider(Rectangle bounds, const char *label, float value, float minVal, float maxVal);
+
+        // Step-Through Debugger Controls
+        static int drawStepControls(Rectangle bounds, bool isPlaying, int currentStep, int totalSteps);
+
+        // Visual Encodings
+        static void drawDashedLine(Vector2 start, Vector2 end, float thick, float dashLen, Color color);
+        static void drawRadialGauge(Vector2 center, float innerRadius, float outerRadius, float percentage, Color barColor, Color bgColor);
     };
 
 } // namespace dhaka

@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <iostream>
 #include <algorithm>
+#include <sstream>
+#include <iomanip>
 
 namespace dhaka
 {
@@ -12,6 +14,7 @@ namespace dhaka
         : engine(eng), camera(screenWidth, screenHeight)
     {
         UIComponents::initFont();
+        engine.generateTraceForStage(0);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -27,7 +30,7 @@ namespace dhaka
         float stepperH = 48.0f;
         float bottomH = 72.0f;
         float iconRailW = 64.0f;
-        float rightPanelW = std::max(280.0f, w * 0.28f);
+        float rightPanelW = std::max(290.0f, w * 0.28f);
 
         titleBarRect = {0, 0, w, titleH};
         stepperRect = {0, titleH, w, stepperH};
@@ -48,22 +51,46 @@ namespace dhaka
     void Renderer::update(float dt)
     {
         computeLayout();
-        camera.update(dt);
+        animWaveTimer += dt;
+        engine.activeTrace.update(dt);
+
+        // Pan and zoom camera only when mouse is over the map area
+        Vector2 mouseScreen = GetMousePosition();
+        if (CheckCollisionPointRec(mouseScreen, mapRect))
+        {
+            camera.update(dt);
+        }
+
         handleInteractions();
 
         // Keyboard shortcuts
         if (IsKeyPressed(KEY_SPACE))
             engine.isPaused = !engine.isPaused;
         if (IsKeyPressed(KEY_ONE))
+        {
             activeStage = PipelineStage::ROAD_NETWORK;
+            engine.generateTraceForStage(0);
+        }
         if (IsKeyPressed(KEY_TWO))
+        {
             activeStage = PipelineStage::ROUTING;
+            engine.generateTraceForStage(1);
+        }
         if (IsKeyPressed(KEY_THREE))
+        {
             activeStage = PipelineStage::SEQUENCING;
+            engine.generateTraceForStage(2);
+        }
         if (IsKeyPressed(KEY_FOUR))
+        {
             activeStage = PipelineStage::LOAD_SELECT;
+            engine.generateTraceForStage(3);
+        }
         if (IsKeyPressed(KEY_FIVE))
+        {
             activeStage = PipelineStage::LANDFILL_BALANCE;
+            engine.generateTraceForStage(4);
+        }
         if (IsKeyPressed(KEY_R))
             engine.triggerRandomDhakaDisruption();
 
@@ -73,7 +100,7 @@ namespace dhaka
         if (IsKeyPressed(KEY_RIGHT_BRACKET))
             engine.simSpeedMultiplier = std::min(20.0f, engine.simSpeedMultiplier * 2.0f);
 
-        // Update timeline position based on sim time
+        // Update timeline scrubber position from simulation time (modulo 24 hrs)
         double totalSimHours = 24.0;
         timelinePos = static_cast<float>(std::fmod(engine.getSimTimeHours(), totalSimHours) / totalSimHours);
     }
@@ -87,13 +114,18 @@ namespace dhaka
         Vector2 mouseScreen = GetMousePosition();
         Vec2 mouseWorld = camera.screenToWorld(mouseScreen);
 
-        // Only interact with world if mouse is over the map area
         bool overMap = CheckCollisionPointRec(mouseScreen, mapRect);
 
         hoveredBinId = -1;
         hoveredEdgeId = -1;
         hoveredVehicleId = -1;
         hoveredLandfillId = -1;
+
+        // If inline editor or popovers are active and mouse is inside them, suppress map interactions
+        if (roadEditor.active || binEditor.active)
+            return;
+        if (activePopover != 0 && CheckCollisionPointRec(mouseScreen, {iconRailRect.x + iconRailRect.width, iconRailRect.y, 220.0f, 260.0f}))
+            return;
 
         if (!overMap)
             return;
@@ -103,7 +135,7 @@ namespace dhaka
         {
             float dist = mouseWorld.distanceTo(bin.position);
             float radius = 8.0f + static_cast<float>(bin.getFillRatio() * 12.0f);
-            if (dist <= radius + 5.0f)
+            if (dist <= radius + 6.0f)
             {
                 hoveredBinId = bin.id;
                 if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
@@ -115,7 +147,13 @@ namespace dhaka
                     }
                     else
                     {
-                        engine.triggerBinOverflow(bin.id, 750.0);
+                        // Open inline bin editor
+                        binEditor.active = true;
+                        binEditor.binId = bin.id;
+                        binEditor.worldPos = bin.position;
+                        binEditor.screenPos = mouseScreen;
+                        binEditor.capacityKg = static_cast<float>(bin.capacityKg);
+                        binEditor.initialWasteKg = static_cast<float>(bin.currentWasteKg);
                     }
                 }
                 break;
@@ -142,7 +180,7 @@ namespace dhaka
             for (const auto &lf : engine.data.landfills)
             {
                 float dist = mouseWorld.distanceTo(lf.position);
-                if (dist <= 26.0f)
+                if (dist <= 30.0f)
                 {
                     hoveredLandfillId = lf.id;
                     break;
@@ -171,16 +209,26 @@ namespace dhaka
                     }
                     else
                     {
-                        // Cycle: Free -> Congested -> Closed -> Free
+                        // Open inline road weight editor right at click point!
                         const auto &edge = engine.data.graph.getEdge(edgeId);
-                        if (!edge.isClosed && edge.congestionFactor <= 1.2)
-                            engine.triggerRoadCongestion(edgeId, 4.5);
-                        else if (!edge.isClosed && edge.congestionFactor > 1.2)
-                            engine.triggerRoadClosure(edgeId);
-                        else
-                            engine.clearRoadDisruption(edgeId);
+                        roadEditor.active = true;
+                        roadEditor.edgeId = edgeId;
+                        roadEditor.screenPos = mouseScreen;
+                        roadEditor.tempSpeed = static_cast<float>(edge.baseSpeedKmh);
+                        roadEditor.tempCongestion = static_cast<float>(edge.congestionFactor);
+                        roadEditor.tempClosed = edge.isClosed;
                     }
                 }
+            }
+            else if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && disruptionMode == 0)
+            {
+                // Click on empty map space -> Open inline editor to create a new bin!
+                binEditor.active = true;
+                binEditor.binId = -1; // New bin
+                binEditor.worldPos = mouseWorld;
+                binEditor.screenPos = mouseScreen;
+                binEditor.capacityKg = 1500.0f;
+                binEditor.initialWasteKg = 600.0f;
             }
         }
     }
@@ -196,14 +244,17 @@ namespace dhaka
 
         // 1. Title Bar
         bool pauseClicked = UIComponents::drawTitleBar(titleBarRect, engine.isPaused,
-                                                       engine.simTimeSeconds, engine.simSpeedMultiplier, isLiveMode);
+                                                       engine.simTimeSeconds, engine.simSpeedMultiplier, engine.isLiveMode);
         if (pauseClicked)
             engine.isPaused = !engine.isPaused;
 
         // 2. Pipeline Stepper
         int clickedStage = UIComponents::drawPipelineStepper(stepperRect, static_cast<int>(activeStage));
         if (clickedStage >= 0 && clickedStage <= 4)
+        {
             activeStage = static_cast<PipelineStage>(clickedStage);
+            engine.generateTraceForStage(clickedStage);
+        }
 
         // 3. Map Region (camera-transformed)
         BeginScissorMode(static_cast<int>(mapRect.x), static_cast<int>(mapRect.y),
@@ -215,50 +266,99 @@ namespace dhaka
         EndScissorMode();
 
         // 4. Icon Rail
-        UIComponents::drawIconRail(iconRailRect, layerFlags);
-
-        // 5. Right Panel
-        renderRightPanel();
-
-        // 6. Bottom Bar
-        float newTimelinePos = UIComponents::drawTimelineScrubber(bottomBarRect, timelinePos, engine.isPaused);
-        if (std::abs(newTimelinePos - timelinePos) > 0.001f)
+        int railAction = UIComponents::drawIconRail(iconRailRect, layerFlags,
+                                                    static_cast<int>(engine.activeDisruptions.size()), activePopover);
+        if (railAction > 0)
         {
-            timelinePos = newTimelinePos;
+            activePopover = (activePopover == railAction) ? 0 : railAction;
         }
 
-        // Disruption buttons in bottom bar (right side)
-        float dbX = bottomBarRect.x + bottomBarRect.width - 500.0f;
-        float dbY = bottomBarRect.y + 14.0f;
-        float dbW = 150.0f;
-        float dbH = 42.0f;
+        // 5. Rail Popovers (Layers / Settings / Alerts)
+        renderRailPopovers();
 
-        if (UIComponents::drawDisruptionButton({dbX, dbY, dbW, dbH}, "/\\", "Close road"))
+        // 6. Right Panel
+        renderRightPanel();
+
+        // 7. Bottom Bar Step Controls & Scrubber
+        DrawRectangleRec(bottomBarRect, UIComponents::PANEL_BG);
+        DrawLineEx({bottomBarRect.x, bottomBarRect.y},
+                   {bottomBarRect.x + bottomBarRect.width, bottomBarRect.y}, 1.0f, UIComponents::PANEL_BORDER);
+
+        // Step-through controls ⏮ ◀ ▶ ⏭ on bottom left
+        Rectangle stepCtrlBounds = {bottomBarRect.x + 16.0f, bottomBarRect.y + 12.0f, 240.0f, 32.0f};
+        int stepAction = UIComponents::drawStepControls(stepCtrlBounds, engine.activeTrace.isPlaying,
+                                                        engine.activeTrace.currentStepIndex,
+                                                        static_cast<int>(engine.activeTrace.steps.size()));
+        if (stepAction == 1)
+            engine.activeTrace.stepBackward();
+        else if (stepAction == 2)
+            engine.activeTrace.isPlaying = !engine.activeTrace.isPlaying;
+        else if (stepAction == 3)
+            engine.activeTrace.stepForward();
+        else if (stepAction == 4)
+            engine.activeTrace.resetToStart();
+
+        // Timeline scrubber in middle
+        float scrubX = bottomBarRect.x + 280.0f;
+        float scrubW = bottomBarRect.width - 280.0f - 490.0f;
+        Rectangle scrubBounds = {scrubX, bottomBarRect.y + 14.0f, scrubW, 28.0f};
+
+        float newTimelinePos = UIComponents::drawTimelineScrubber(scrubBounds, timelinePos, engine.isPaused);
+        if (std::abs(newTimelinePos - timelinePos) > 0.005f)
+        {
+            timelinePos = newTimelinePos;
+            engine.setSimTimeHours(timelinePos * 24.0);
+        }
+
+        // Disruption buttons on right
+        float dbX = bottomBarRect.x + bottomBarRect.width - 470.0f;
+        float dbY = bottomBarRect.y + 14.0f;
+        float dbW = 145.0f;
+        float dbH = 34.0f;
+
+        if (UIComponents::drawDisruptionButton({dbX, dbY, dbW, dbH}, "/\\", "Close road", disruptionMode == 1))
         {
             disruptionMode = (disruptionMode == 1) ? 0 : 1;
         }
-        if (UIComponents::drawDisruptionButton({dbX + dbW + 8.0f, dbY, dbW, dbH}, "!!", "Spike congestion"))
+        if (UIComponents::drawDisruptionButton({dbX + dbW + 8.0f, dbY, dbW, dbH}, "!!", "Spike congestion", disruptionMode == 2))
         {
             disruptionMode = (disruptionMode == 2) ? 0 : 2;
         }
-        if (UIComponents::drawDisruptionButton({dbX + (dbW + 8.0f) * 2.0f, dbY, dbW, dbH}, "+", "New overflow"))
+        if (UIComponents::drawDisruptionButton({dbX + (dbW + 8.0f) * 2.0f, dbY, dbW, dbH}, "+", "New overflow", disruptionMode == 3))
         {
             disruptionMode = (disruptionMode == 3) ? 0 : 3;
         }
 
-        // Disruption mode indicator
-        if (disruptionMode > 0)
+        // Bottom Narration Banner: current step explanation or simulation status
+        const AlgorithmStep *currentStep = engine.activeTrace.getCurrentStep();
+        std::string bottomNarration = currentStep ? currentStep->narration : engine.lastAlgorithmStatusMessage;
+        if (!bottomNarration.empty())
         {
-            const char *modeText = disruptionMode == 1 ? "Click a road to CLOSE it" : (disruptionMode == 2 ? "Click a road to CONGEST it" : "Click a bin to trigger OVERFLOW");
-            int tw = UIComponents::measureText(modeText, 14.0f);
-            DrawRectangle(static_cast<int>(mapRect.x + mapRect.width * 0.5f - tw * 0.5f - 12),
-                          static_cast<int>(mapRect.y + 10), tw + 24, 28, {239, 68, 68, 200});
-            UIComponents::drawText(modeText,
-                                   mapRect.x + mapRect.width * 0.5f - tw * 0.5f,
-                                   mapRect.y + 17.0f, 14.0f, WHITE);
+            int maxChars = static_cast<int>((bottomBarRect.width - 32.0f) / 7.0f);
+            if (bottomNarration.length() > static_cast<size_t>(maxChars))
+            {
+                bottomNarration = bottomNarration.substr(0, maxChars - 3) + "...";
+            }
+            UIComponents::drawText(bottomNarration.c_str(), bottomBarRect.x + 16.0f, bottomBarRect.y + 50.0f, 11.0f, UIComponents::COLOR_GOLD);
         }
 
-        // 7. Tooltips (on top of everything)
+        // 8. Disruption Mode Banner
+        if (disruptionMode > 0)
+        {
+            const char *modeText = disruptionMode == 1 ? "Click any road edge to CLOSE it" : (disruptionMode == 2 ? "Click any road edge to CONGEST it (4.5x)" : "Click any bin to trigger 750kg OVERFLOW");
+            int tw = UIComponents::measureText(modeText, 13.0f);
+            DrawRectangle(static_cast<int>(mapRect.x + mapRect.width * 0.5f - tw * 0.5f - 14),
+                          static_cast<int>(mapRect.y + 12), tw + 28, 30, {220, 38, 38, 220});
+            UIComponents::drawText(modeText,
+                                   mapRect.x + mapRect.width * 0.5f - tw * 0.5f,
+                                   mapRect.y + 20.0f, 13.0f, WHITE);
+        }
+
+        // 9. Inline Map Editors (Road Editor / Bin Editor)
+        renderInlineRoadEditor();
+        renderInlineBinEditor();
+
+        // 10. Tooltips (on top)
         renderTooltips();
 
         EndDrawing();
@@ -306,7 +406,7 @@ namespace dhaka
 
     void Renderer::renderRoads()
     {
-        float time = static_cast<float>(GetTime());
+        double hourOfDay = engine.getHourOfDay();
 
         for (const auto &edge : engine.data.graph.edges)
         {
@@ -319,47 +419,50 @@ namespace dhaka
             Vector2 pA = {nA.position.x, nA.position.y};
             Vector2 pB = {nB.position.x, nB.position.y};
 
-            Color roadColor;
-            float roadThickness = 3.5f;
-
             if (edge.isClosed)
             {
-                float pulse = (std::sin(time * 6.0f) + 1.0f) * 0.5f;
-                roadColor = ColorAlpha(UIComponents::COLOR_RED, 0.4f + pulse * 0.5f);
-                roadThickness = 4.0f;
-            }
-            else if (edge.congestionFactor >= 3.0)
-            {
-                roadColor = UIComponents::COLOR_RED;
-                roadThickness = 4.5f;
-            }
-            else if (edge.congestionFactor > 1.4)
-            {
-                roadColor = UIComponents::COLOR_GOLD;
-                roadThickness = 4.0f;
+                // USER SPEC: "a closed road shows dashed gray"
+                UIComponents::drawDashedLine(pA, pB, 4.0f, 10.0f, UIComponents::COLOR_GRAY);
+
+                // Roadblock marker (X) at midpoint
+                Vector2 mid = {(pA.x + pB.x) * 0.5f, (pA.y + pB.y) * 0.5f};
+                DrawCircle(static_cast<int>(mid.x), static_cast<int>(mid.y), 7.0f, {50, 50, 60, 255});
+                DrawLine(static_cast<int>(mid.x - 4), static_cast<int>(mid.y - 4),
+                         static_cast<int>(mid.x + 4), static_cast<int>(mid.y + 4), UIComponents::COLOR_RED);
+                DrawLine(static_cast<int>(mid.x - 4), static_cast<int>(mid.y + 4),
+                         static_cast<int>(mid.x + 4), static_cast<int>(mid.y - 4), UIComponents::COLOR_RED);
             }
             else
             {
-                roadColor = Color{46, 75, 60, 220};
-                roadThickness = 2.8f;
-            }
+                // Roads color-scaled green -> amber -> red by total congestion factor
+                double totalCongestion = edge.congestionFactor * edge.getTimeOfDayMultiplier(hourOfDay);
 
-            if (edge.id == hoveredEdgeId)
-            {
-                roadThickness += 2.0f;
-                roadColor = UIComponents::COLOR_CYAN;
-            }
+                Color roadColor;
+                float roadThickness = 3.5f;
 
-            DrawLineEx(pA, pB, roadThickness, roadColor);
+                if (totalCongestion >= 3.0)
+                {
+                    roadColor = UIComponents::COLOR_RED;
+                    roadThickness = 4.5f;
+                }
+                else if (totalCongestion > 1.4)
+                {
+                    roadColor = UIComponents::COLOR_GOLD;
+                    roadThickness = 4.0f;
+                }
+                else
+                {
+                    roadColor = Color{46, 75, 60, 220};
+                    roadThickness = 2.8f;
+                }
 
-            if (edge.isClosed)
-            {
-                Vector2 mid = {(pA.x + pB.x) * 0.5f, (pA.y + pB.y) * 0.5f};
-                DrawCircle(static_cast<int>(mid.x), static_cast<int>(mid.y), 7.0f, UIComponents::COLOR_RED);
-                DrawLine(static_cast<int>(mid.x - 4), static_cast<int>(mid.y - 4),
-                         static_cast<int>(mid.x + 4), static_cast<int>(mid.y + 4), WHITE);
-                DrawLine(static_cast<int>(mid.x - 4), static_cast<int>(mid.y + 4),
-                         static_cast<int>(mid.x + 4), static_cast<int>(mid.y - 4), WHITE);
+                if (edge.id == hoveredEdgeId)
+                {
+                    roadThickness += 2.0f;
+                    roadColor = UIComponents::COLOR_CYAN;
+                }
+
+                DrawLineEx(pA, pB, roadThickness, roadColor);
             }
         }
     }
@@ -443,27 +546,50 @@ namespace dhaka
 
     void Renderer::renderLandfills()
     {
+        float time = static_cast<float>(GetTime());
+
         for (const auto &lf : engine.data.landfills)
         {
             Vector2 pos = {lf.position.x, lf.position.y};
 
-            DrawRectanglePro({pos.x, pos.y, 34.0f, 34.0f}, {17.0f, 17.0f}, 45.0f,
-                             lf.id == 0 ? UIComponents::COLOR_CYAN : UIComponents::COLOR_PURPLE);
-            DrawRectangleLinesEx({pos.x - 19.0f, pos.y - 19.0f, 38.0f, 38.0f}, 2.0f, WHITE);
+            // USER SPEC: "Landfills as two fixed icons, each with a radial fill showing % of daily intake used."
+            float intakePct = static_cast<float>(lf.getIntakePercentage());
+            Color gaugeColor = (intakePct > 85.0f)   ? UIComponents::COLOR_RED
+                               : (intakePct > 60.0f) ? UIComponents::COLOR_GOLD
+                                                     : (lf.id == 0 ? UIComponents::COLOR_CYAN : UIComponents::COLOR_PURPLE);
 
+            // Flashing ring if binding / saturated
+            if (intakePct > 80.0f)
+            {
+                float pulse = (std::sin(time * 6.0f) + 1.0f) * 0.5f;
+                DrawCircleLines(static_cast<int>(pos.x), static_cast<int>(pos.y),
+                                26.0f + pulse * 6.0f, ColorAlpha(UIComponents::COLOR_RED, 0.8f - pulse * 0.4f));
+            }
+
+            // Radial gauge ring around the icon
+            UIComponents::drawRadialGauge(pos, 18.0f, 24.0f, intakePct, gaugeColor, {30, 36, 50, 180});
+
+            // Diamond Icon Body
+            DrawRectanglePro({pos.x, pos.y, 28.0f, 28.0f}, {14.0f, 14.0f}, 45.0f, {20, 26, 38, 255});
+            DrawRectangleLinesEx({pos.x - 14.0f, pos.y - 14.0f, 28.0f, 28.0f}, 1.5f, gaugeColor);
+
+            // Landfill short name
             UIComponents::drawText(lf.shortName.c_str(), pos.x - 28.0f, pos.y - 34.0f,
                                    12.0f, UIComponents::TEXT_PRIMARY);
 
-            float p = static_cast<float>(lf.getIntakePercentage());
-            Rectangle barRec = {pos.x - 26.0f, pos.y + 22.0f, 52.0f, 7.0f};
-            UIComponents::drawProgressBar(barRec, p, p > 80.0f ? UIComponents::COLOR_RED : UIComponents::COLOR_GREEN, nullptr);
+            // Percentage label inside
+            char pBuf[16];
+            std::snprintf(pBuf, sizeof(pBuf), "%.0f%%", intakePct);
+            int tw = UIComponents::measureText(pBuf, 10.0f);
+            UIComponents::drawText(pBuf, pos.x - tw * 0.5f, pos.y - 5.0f, 10.0f, WHITE);
 
+            // Queue count indicator badge
             if (lf.queueCount > 0)
             {
-                DrawCircle(static_cast<int>(pos.x + 18.0f), static_cast<int>(pos.y - 16.0f), 8.0f, UIComponents::COLOR_GOLD);
+                DrawCircle(static_cast<int>(pos.x + 20.0f), static_cast<int>(pos.y - 18.0f), 8.0f, UIComponents::COLOR_GOLD);
                 char qBuf[8];
                 std::snprintf(qBuf, sizeof(qBuf), "%d", lf.queueCount);
-                UIComponents::drawText(qBuf, pos.x + 15.0f, pos.y - 21.0f, 10.0f, BLACK);
+                UIComponents::drawText(qBuf, pos.x + 17.0f, pos.y - 23.0f, 10.0f, BLACK);
             }
         }
     }
@@ -495,22 +621,21 @@ namespace dhaka
                                    ? UIComponents::COLOR_CYAN
                                    : UIComponents::COLOR_GOLD;
 
+            // Truck icon body
             Rectangle truckRec = {pos.x, pos.y, 22.0f, 13.0f};
             Vector2 origin = {11.0f, 6.5f};
             DrawRectanglePro(truckRec, origin, v.headingAngle, truckColor);
             DrawRectangleLinesEx({pos.x - 11.0f, pos.y - 7.0f, 22.0f, 14.0f}, 1.0f, WHITE);
 
-            // Cargo load ring (capacity-fill indicator)
+            // USER SPEC: "capacity-fill ring around them (like a battery indicator)"
             float loadPct = static_cast<float>(v.getLoadPercentage());
             float ringRadius = 14.0f;
-            float ringAngle = loadPct / 100.0f * 360.0f;
             Color ringColor = loadPct > 85.0f ? UIComponents::COLOR_RED : UIComponents::COLOR_GREEN;
 
-            // Draw ring as arc approximation
             DrawCircleLines(static_cast<int>(pos.x), static_cast<int>(pos.y), ringRadius, {30, 40, 55, 100});
-            if (ringAngle > 0.0f)
+            if (loadPct > 0.0f)
             {
-                DrawRing({pos.x, pos.y}, ringRadius - 2.0f, ringRadius, 0.0f, ringAngle, 24, ringColor);
+                DrawRing(pos, ringRadius - 2.5f, ringRadius, 0.0f, (loadPct / 100.0f) * 360.0f, 24, ringColor);
             }
 
             // State indicator dot
@@ -553,7 +678,8 @@ namespace dhaka
 
     void Renderer::renderOverlay_RoadNetwork()
     {
-        // Show edge weights (travel time) and node IDs on the map
+        double hourOfDay = engine.getHourOfDay();
+
         for (const auto &edge : engine.data.graph.edges)
         {
             if (edge.fromNode > edge.toNode)
@@ -573,23 +699,24 @@ namespace dhaka
             }
             else
             {
-                std::snprintf(timeBuf, sizeof(timeBuf), "%.0fs", edge.getTravelTimeSeconds());
+                std::snprintf(timeBuf, sizeof(timeBuf), "%.0fs", edge.getTravelTimeSeconds(hourOfDay));
             }
             UIComponents::drawText(timeBuf, mid.x - 12.0f, mid.y - 14.0f, 9.0f,
                                    edge.isClosed ? UIComponents::COLOR_RED : UIComponents::TEXT_MUTED);
 
             // Congestion factor badge
-            if (!edge.isClosed && edge.congestionFactor > 1.2)
+            double totalCongestion = edge.congestionFactor * edge.getTimeOfDayMultiplier(hourOfDay);
+            if (!edge.isClosed && totalCongestion > 1.2)
             {
                 char congBuf[16];
-                std::snprintf(congBuf, sizeof(congBuf), "%.1fx", edge.congestionFactor);
+                std::snprintf(congBuf, sizeof(congBuf), "%.1fx", totalCongestion);
                 UIComponents::drawText(congBuf, mid.x - 8.0f, mid.y + 2.0f, 8.0f,
-                                       edge.congestionFactor >= 3.0 ? UIComponents::COLOR_RED : UIComponents::COLOR_GOLD);
+                                       totalCongestion >= 3.0 ? UIComponents::COLOR_RED : UIComponents::COLOR_GOLD);
             }
         }
 
         // Node ID labels
-        if (camera.camera.zoom >= 0.6f)
+        if (showNodeIds || camera.camera.zoom >= 0.6f)
         {
             for (int i = 0; i < engine.data.graph.getNodeCount(); ++i)
             {
@@ -606,145 +733,191 @@ namespace dhaka
 
     void Renderer::renderOverlay_Routing()
     {
-        // Highlight active A* paths with thicker, brighter lines
         float time = static_cast<float>(GetTime());
+        const AlgorithmStep *step = engine.activeTrace.getCurrentStep();
 
-        for (const auto &v : engine.data.vehicles)
+        // USER SPEC: "draws the animated Dijkstra/A* frontier and the settled path"
+        if (step && step->type == TraceType::ROUTING_ASTAR)
         {
-            if (v.pathNodeIds.size() < 2)
-                continue;
-
-            bool isActive = (v.state == VehicleState::EN_ROUTE_TO_BIN ||
-                             v.state == VehicleState::EN_ROUTE_TO_LANDFILL);
-            if (!isActive)
-                continue;
-
-            Color pathColor = (v.corporation == Corporation::DNCC)
-                                  ? UIComponents::COLOR_CYAN
-                                  : UIComponents::COLOR_GOLD;
-
-            // Draw explored frontier glow effect
-            for (size_t i = v.currentPathSegmentIndex; i + 1 < v.pathNodeIds.size(); ++i)
+            // 1. Draw frontier wavefront nodes (pulsing circles)
+            for (int nodeId : step->frontierNodeIds)
             {
-                int u = v.pathNodeIds[i];
-                int next = v.pathNodeIds[i + 1];
-
-                Vector2 p1 = (static_cast<int>(i) == v.currentPathSegmentIndex)
-                                 ? Vector2{v.currentPosition.x, v.currentPosition.y}
-                                 : Vector2{engine.data.graph.getNode(u).position.x,
-                                           engine.data.graph.getNode(u).position.y};
-                Vector2 p2 = {engine.data.graph.getNode(next).position.x,
-                              engine.data.graph.getNode(next).position.y};
-
-                // Animated dash effect
-                float segProgress = static_cast<float>(i - v.currentPathSegmentIndex) /
-                                    static_cast<float>(std::max(1, static_cast<int>(v.pathNodeIds.size()) - v.currentPathSegmentIndex - 1));
-                float alpha = 0.8f - segProgress * 0.5f;
-                float pulse = (std::sin(time * 4.0f + segProgress * 6.28f) + 1.0f) * 0.15f;
-
-                DrawLineEx(p1, p2, 5.0f, ColorAlpha(pathColor, alpha + pulse));
+                if (nodeId < 0 || nodeId >= engine.data.graph.getNodeCount())
+                    continue;
+                const auto &node = engine.data.graph.getNode(nodeId);
+                float pulseR = 10.0f + (std::sin(animWaveTimer * 6.0f) + 1.0f) * 6.0f;
+                DrawCircleLines(static_cast<int>(node.position.x), static_cast<int>(node.position.y),
+                                pulseR, UIComponents::COLOR_CYAN);
             }
 
-            // Draw path destination marker
-            if (!v.pathNodeIds.empty())
+            // 2. Draw settled/explored nodes
+            for (int nodeId : step->settledNodeIds)
             {
+                if (nodeId < 0 || nodeId >= engine.data.graph.getNodeCount())
+                    continue;
+                const auto &node = engine.data.graph.getNode(nodeId);
+                DrawCircle(static_cast<int>(node.position.x), static_cast<int>(node.position.y), 5.0f, {37, 99, 235, 180});
+            }
+
+            // 3. Draw active edge being relaxed
+            if (step->activeEdgeId >= 0 && step->activeEdgeId < engine.data.graph.getEdgeCount())
+            {
+                const auto &edge = engine.data.graph.getEdge(step->activeEdgeId);
+                const auto &nA = engine.data.graph.getNode(edge.fromNode);
+                const auto &nB = engine.data.graph.getNode(edge.toNode);
+                DrawLineEx({nA.position.x, nA.position.y}, {nB.position.x, nB.position.y}, 6.0f, UIComponents::COLOR_GOLD);
+            }
+
+            // 4. Draw settled path if found
+            if (!step->settledNodeIds.empty() && !step->currentPathNodeIds.empty())
+            {
+                for (size_t i = 0; i + 1 < step->currentPathNodeIds.size(); ++i)
+                {
+                    int u = step->currentPathNodeIds[i];
+                    int v = step->currentPathNodeIds[i + 1];
+                    const auto &nA = engine.data.graph.getNode(u);
+                    const auto &nB = engine.data.graph.getNode(v);
+                    DrawLineEx({nA.position.x, nA.position.y}, {nB.position.x, nB.position.y}, 5.0f, UIComponents::COLOR_GREEN);
+                }
+            }
+        }
+        else
+        {
+            // Real-time active paths when not in step trace
+            for (const auto &v : engine.data.vehicles)
+            {
+                if (v.pathNodeIds.size() < 2)
+                    continue;
+
+                Color pathColor = (v.corporation == Corporation::DNCC)
+                                      ? UIComponents::COLOR_CYAN
+                                      : UIComponents::COLOR_GOLD;
+
+                for (size_t i = v.currentPathSegmentIndex; i + 1 < v.pathNodeIds.size(); ++i)
+                {
+                    int u = v.pathNodeIds[i];
+                    int next = v.pathNodeIds[i + 1];
+
+                    Vector2 p1 = (static_cast<int>(i) == v.currentPathSegmentIndex)
+                                     ? Vector2{v.currentPosition.x, v.currentPosition.y}
+                                     : Vector2{engine.data.graph.getNode(u).position.x,
+                                               engine.data.graph.getNode(u).position.y};
+                    Vector2 p2 = {engine.data.graph.getNode(next).position.x,
+                                  engine.data.graph.getNode(next).position.y};
+
+                    float pulse = (std::sin(time * 4.0f + static_cast<float>(i) * 0.5f) + 1.0f) * 0.15f;
+                    DrawLineEx(p1, p2, 4.5f, ColorAlpha(pathColor, 0.7f + pulse));
+                }
+
+                // A* marker at target destination
                 int destNode = v.pathNodeIds.back();
                 const auto &dest = engine.data.graph.getNode(destNode);
-                float pulseR = (std::sin(time * 3.0f) + 1.0f) * 3.0f + 8.0f;
                 DrawCircleLines(static_cast<int>(dest.position.x), static_cast<int>(dest.position.y),
-                                pulseR, pathColor);
+                                12.0f, pathColor);
+                UIComponents::drawText("A*", v.currentPosition.x + 14.0f,
+                                       v.currentPosition.y - 22.0f, 10.0f, pathColor);
             }
-
-            // A* label at vehicle
-            UIComponents::drawText("A*", v.currentPosition.x + 14.0f,
-                                   v.currentPosition.y - 22.0f, 10.0f, pathColor);
         }
     }
 
     void Renderer::renderOverlay_Sequencing()
     {
-        // Show numbered visit order for each vehicle's assigned bins
-        for (const auto &v : engine.data.vehicles)
+        // USER SPEC: "Sequencing stage numbers the bins a truck will hit in order"
+        const AlgorithmStep *step = engine.activeTrace.getCurrentStep();
+
+        if (step && step->type == TraceType::SEQUENCING_GREEDY)
         {
-            if (v.assignedBinIds.empty())
-                continue;
-
-            Color tourColor = (v.corporation == Corporation::DNCC)
-                                  ? UIComponents::COLOR_CYAN
-                                  : UIComponents::COLOR_GOLD;
-
-            // Draw numbered badges on bins
-            for (size_t i = 0; i < v.assignedBinIds.size(); ++i)
+            for (size_t i = 0; i < step->tourBinIdsSoFar.size(); ++i)
             {
-                int binId = v.assignedBinIds[i];
+                int binId = step->tourBinIdsSoFar[i];
                 if (binId < 0 || binId >= static_cast<int>(engine.data.bins.size()))
                     continue;
 
                 const auto &bin = engine.data.bins[binId];
-
-                // Visit order number badge
                 char numBuf[8];
                 std::snprintf(numBuf, sizeof(numBuf), "%d", static_cast<int>(i + 1));
 
                 float badgeX = bin.position.x + 10.0f;
                 float badgeY = bin.position.y - 16.0f;
 
-                DrawCircle(static_cast<int>(badgeX), static_cast<int>(badgeY), 10.0f, tourColor);
+                DrawCircle(static_cast<int>(badgeX), static_cast<int>(badgeY), 10.0f, UIComponents::COLOR_GOLD);
                 int tw = UIComponents::measureText(numBuf, 10.0f);
                 UIComponents::drawText(numBuf, badgeX - tw * 0.5f, badgeY - 5.0f, 10.0f, WHITE);
-
-                // Greyed out if already visited
-                if (static_cast<int>(i) < v.currentTargetBinIndex)
-                {
-                    DrawCircle(static_cast<int>(bin.position.x), static_cast<int>(bin.position.y),
-                               10.0f, {20, 24, 34, 160}); // semi-transparent overlay
-                }
             }
 
-            // Draw greedy tour connecting lines between consecutive bins
-            for (size_t i = 0; i + 1 < v.assignedBinIds.size(); ++i)
+            // Connecting greedy tour lines
+            for (size_t i = 0; i + 1 < step->tourBinIdsSoFar.size(); ++i)
             {
-                int binA = v.assignedBinIds[i];
-                int binB = v.assignedBinIds[i + 1];
-                if (binA < 0 || binA >= static_cast<int>(engine.data.bins.size()))
-                    continue;
-                if (binB < 0 || binB >= static_cast<int>(engine.data.bins.size()))
+                int bA = step->tourBinIdsSoFar[i];
+                int bB = step->tourBinIdsSoFar[i + 1];
+                const auto &a = engine.data.bins[bA];
+                const auto &b = engine.data.bins[bB];
+                DrawLineEx({a.position.x, a.position.y}, {b.position.x, b.position.y}, 3.0f, UIComponents::COLOR_GOLD);
+            }
+        }
+        else
+        {
+            // Show current tour for each truck
+            for (const auto &v : engine.data.vehicles)
+            {
+                if (v.assignedBinIds.empty())
                     continue;
 
-                const auto &a = engine.data.bins[binA];
-                const auto &b = engine.data.bins[binB];
-                DrawLineEx({a.position.x, a.position.y}, {b.position.x, b.position.y},
-                           2.0f, ColorAlpha(tourColor, 0.4f));
+                Color tourColor = (v.corporation == Corporation::DNCC)
+                                      ? UIComponents::COLOR_CYAN
+                                      : UIComponents::COLOR_GOLD;
+
+                for (size_t i = 0; i < v.assignedBinIds.size(); ++i)
+                {
+                    int binId = v.assignedBinIds[i];
+                    if (binId < 0 || binId >= static_cast<int>(engine.data.bins.size()))
+                        continue;
+
+                    const auto &bin = engine.data.bins[binId];
+                    char numBuf[8];
+                    std::snprintf(numBuf, sizeof(numBuf), "%d", static_cast<int>(i + 1));
+
+                    float badgeX = bin.position.x + 10.0f;
+                    float badgeY = bin.position.y - 16.0f;
+
+                    DrawCircle(static_cast<int>(badgeX), static_cast<int>(badgeY), 10.0f, tourColor);
+                    int tw = UIComponents::measureText(numBuf, 10.0f);
+                    UIComponents::drawText(numBuf, badgeX - tw * 0.5f, badgeY - 5.0f, 10.0f, WHITE);
+                }
+
+                for (size_t i = 0; i + 1 < v.assignedBinIds.size(); ++i)
+                {
+                    int bA = v.assignedBinIds[i];
+                    int bB = v.assignedBinIds[i + 1];
+                    const auto &a = engine.data.bins[bA];
+                    const auto &b = engine.data.bins[bB];
+                    DrawLineEx({a.position.x, a.position.y}, {b.position.x, b.position.y}, 2.0f, ColorAlpha(tourColor, 0.5f));
+                }
             }
         }
     }
 
     void Renderer::renderOverlay_LoadSelect()
     {
-        // Show knapsack selection: selected bins outlined green, rejected greyed
-        const auto &result = engine.lastKnapsackResult;
+        // USER SPEC: "Knapsack stage outlines the chosen subset in a solid ring vs. greyed-out unchosen bins"
+        const AlgorithmStep *step = engine.activeTrace.getCurrentStep();
+        const std::vector<int> &chosen = (step && step->type == TraceType::LOAD_SELECT_KNAPSACK)
+                                             ? step->knapsackSelectedBins
+                                             : engine.lastKnapsackResult.selectedBinIds;
 
         for (const auto &bin : engine.data.bins)
         {
-            bool isSelected = false;
-            for (int id : result.selectedBinIds)
-            {
-                if (id == bin.id)
-                {
-                    isSelected = true;
-                    break;
-                }
-            }
+            bool isSelected = (std::find(chosen.begin(), chosen.end(), bin.id) != chosen.end());
 
             if (isSelected)
             {
-                // Green selection highlight
+                // Solid green highlight ring
                 DrawCircleLines(static_cast<int>(bin.position.x), static_cast<int>(bin.position.y),
                                 22.0f, UIComponents::COLOR_GREEN);
                 DrawCircleLines(static_cast<int>(bin.position.x), static_cast<int>(bin.position.y),
                                 24.0f, UIComponents::COLOR_GREEN);
 
-                // Value badge
+                // Waste weight badge
                 char vBuf[32];
                 std::snprintf(vBuf, sizeof(vBuf), "%.0fkg", bin.currentWasteKg);
                 UIComponents::drawText(vBuf, bin.position.x - 16.0f, bin.position.y - 28.0f,
@@ -752,33 +925,32 @@ namespace dhaka
             }
             else if (bin.currentWasteKg > 30.0)
             {
-                // Greyed out rejected candidate
+                // Greyed-out unchosen bin
                 DrawCircle(static_cast<int>(bin.position.x), static_cast<int>(bin.position.y),
-                           18.0f, {20, 24, 34, 140});
+                           18.0f, {20, 24, 34, 160});
             }
         }
     }
 
     void Renderer::renderOverlay_LandfillBalance()
     {
-        // Show flow arrows from trucks to landfills
+        float time = static_cast<float>(GetTime());
+
+        // USER SPEC: "Max-Flow stage swaps the map for a flow-arrow overlay (trucks → landfills, arrow thickness = volume, capped edges flash if binding)"
         for (const auto &v : engine.data.vehicles)
         {
             if (v.targetLandfillId < 0 || v.targetLandfillId >= static_cast<int>(engine.data.landfills.size()))
                 continue;
-            if (v.state != VehicleState::EN_ROUTE_TO_LANDFILL && v.state != VehicleState::UNLOADING_AT_LANDFILL)
-                continue;
 
             const auto &lf = engine.data.landfills[v.targetLandfillId];
-
             Vector2 truckPos = {v.currentPosition.x, v.currentPosition.y};
             Vector2 lfPos = {lf.position.x, lf.position.y};
 
-            // Flow arrow thickness proportional to load
-            float thickness = 2.0f + static_cast<float>(v.currentLoadKg / 500.0) * 3.0f;
+            // Arrow thickness proportional to payload volume
+            float thickness = 2.5f + static_cast<float>(v.currentLoadKg / 500.0) * 3.5f;
             Color flowColor = (v.targetLandfillId == 0) ? UIComponents::COLOR_CYAN : UIComponents::COLOR_PURPLE;
 
-            DrawLineEx(truckPos, lfPos, thickness, ColorAlpha(flowColor, 0.35f));
+            DrawLineEx(truckPos, lfPos, thickness, ColorAlpha(flowColor, 0.45f));
 
             // Arrowhead
             Vector2 dir = {lfPos.x - truckPos.x, lfPos.y - truckPos.y};
@@ -787,42 +959,279 @@ namespace dhaka
             {
                 dir.x /= len;
                 dir.y /= len;
-                Vector2 arrowTip = {lfPos.x - dir.x * 22.0f, lfPos.y - dir.y * 22.0f};
-                Vector2 perp = {-dir.y * 6.0f, dir.x * 6.0f};
+                Vector2 arrowTip = {lfPos.x - dir.x * 24.0f, lfPos.y - dir.y * 24.0f};
+                Vector2 perp = {-dir.y * 7.0f, dir.x * 7.0f};
                 DrawTriangle(
                     {arrowTip.x + dir.x * 12.0f, arrowTip.y + dir.y * 12.0f},
                     {arrowTip.x + perp.x, arrowTip.y + perp.y},
                     {arrowTip.x - perp.x, arrowTip.y - perp.y},
-                    ColorAlpha(flowColor, 0.6f));
+                    ColorAlpha(flowColor, 0.7f));
             }
 
-            // Load label at midpoint
+            // Midpoint volume label
             Vector2 mid = {(truckPos.x + lfPos.x) * 0.5f, (truckPos.y + lfPos.y) * 0.5f};
             char loadBuf[32];
             std::snprintf(loadBuf, sizeof(loadBuf), "%.0fkg", v.currentLoadKg);
             UIComponents::drawText(loadBuf, mid.x - 14.0f, mid.y - 12.0f, 9.0f, flowColor);
         }
 
-        // Landfill capacity rings
+        // Capped edges flash if binding
         for (const auto &lf : engine.data.landfills)
         {
-            Vector2 pos = {lf.position.x, lf.position.y};
-            float intakePct = static_cast<float>(lf.getIntakePercentage());
-            float ringAngle = intakePct / 100.0f * 360.0f;
-            Color ringColor = intakePct > 80.0f   ? UIComponents::COLOR_RED
-                              : intakePct > 50.0f ? UIComponents::COLOR_GOLD
-                                                  : UIComponents::COLOR_GREEN;
-
-            DrawRing(pos, 24.0f, 30.0f, 0.0f, 360.0f, 32, {30, 36, 50, 180});
-            if (ringAngle > 0.0f)
+            if (lf.getIntakePercentage() >= 80.0)
             {
-                DrawRing(pos, 24.0f, 30.0f, 0.0f, ringAngle, 32, ringColor);
+                float pulse = (std::sin(time * 8.0f) + 1.0f) * 0.5f;
+                DrawCircleLines(static_cast<int>(lf.position.x), static_cast<int>(lf.position.y),
+                                32.0f + pulse * 8.0f, ColorAlpha(UIComponents::COLOR_RED, 0.9f - pulse * 0.5f));
+                UIComponents::drawText("BINDING CAPACITY!", lf.position.x - 50.0f, lf.position.y + 36.0f, 10.0f, UIComponents::COLOR_RED);
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  INLINE MAP EDITORS (Road weights & Bin creation)
+    // ─────────────────────────────────────────────────────────────
+
+    void Renderer::renderInlineRoadEditor()
+    {
+        if (!roadEditor.active || roadEditor.edgeId < 0 || roadEditor.edgeId >= engine.data.graph.getEdgeCount())
+            return;
+
+        auto &edge = engine.data.graph.getEdge(roadEditor.edgeId);
+        float w = 240.0f;
+        float h = 180.0f;
+        float x = roadEditor.screenPos.x;
+        float y = roadEditor.screenPos.y;
+
+        if (x + w > GetScreenWidth() - 10)
+            x = GetScreenWidth() - w - 10;
+        if (y + h > GetScreenHeight() - 80)
+            y = GetScreenHeight() - h - 80;
+
+        Rectangle rPanel = {x, y, w, h};
+        DrawRectangleRounded(rPanel, 0.08f, 4, {18, 24, 36, 250});
+        DrawRectangleRoundedLinesEx(rPanel, 0.08f, 4, 1.5f, UIComponents::COLOR_CYAN);
+
+        UIComponents::drawText(edge.roadName.c_str(), x + 10.0f, y + 8.0f, 13.0f, UIComponents::COLOR_CYAN);
+
+        // Close 'X' button
+        Rectangle rClose = {x + w - 24.0f, y + 6.0f, 18.0f, 18.0f};
+        if (UIComponents::drawButton(rClose, "x"))
+        {
+            roadEditor.active = false;
+            return;
+        }
+
+        float curY = y + 30.0f;
+        // Speed adjustment
+        char spdBuf[32];
+        std::snprintf(spdBuf, sizeof(spdBuf), "Speed: %.0f km/h", roadEditor.tempSpeed);
+        UIComponents::drawText(spdBuf, x + 10.0f, curY, 11.0f, UIComponents::TEXT_PRIMARY);
+
+        if (UIComponents::drawButton({x + 130.0f, curY - 2.0f, 26.0f, 20.0f}, "-"))
+            roadEditor.tempSpeed = std::max(10.0f, roadEditor.tempSpeed - 5.0f);
+        if (UIComponents::drawButton({x + 162.0f, curY - 2.0f, 26.0f, 20.0f}, "+"))
+            roadEditor.tempSpeed = std::min(80.0f, roadEditor.tempSpeed + 5.0f);
+
+        curY += 28.0f;
+        // Congestion adjustment
+        roadEditor.tempCongestion = UIComponents::drawSlider({x + 10.0f, curY, w - 20.0f, 40.0f},
+                                                             "Congestion Factor", roadEditor.tempCongestion, 1.0f, 5.0f);
+        curY += 48.0f;
+
+        // Toggle Closed button
+        if (UIComponents::drawButton({x + 10.0f, curY, (w - 26.0f) * 0.5f, 26.0f}, roadEditor.tempClosed ? "Reopen" : "Close Road", roadEditor.tempClosed))
+        {
+            roadEditor.tempClosed = !roadEditor.tempClosed;
+        }
+
+        // Apply button
+        if (UIComponents::drawButton({x + 16.0f + (w - 26.0f) * 0.5f, curY, (w - 26.0f) * 0.5f, 26.0f}, "Apply", true))
+        {
+            engine.updateRoadEdge(roadEditor.edgeId, roadEditor.tempSpeed, roadEditor.tempCongestion, roadEditor.tempClosed);
+            roadEditor.active = false;
+        }
+    }
+
+    void Renderer::renderInlineBinEditor()
+    {
+        if (!binEditor.active)
+            return;
+
+        float w = 240.0f;
+        float h = (binEditor.binId >= 0) ? 140.0f : 170.0f;
+        float x = binEditor.screenPos.x;
+        float y = binEditor.screenPos.y;
+
+        if (x + w > GetScreenWidth() - 10)
+            x = GetScreenWidth() - w - 10;
+        if (y + h > GetScreenHeight() - 80)
+            y = GetScreenHeight() - h - 80;
+
+        Rectangle rPanel = {x, y, w, h};
+        DrawRectangleRounded(rPanel, 0.08f, 4, {18, 24, 36, 250});
+        DrawRectangleRoundedLinesEx(rPanel, 0.08f, 4, 1.5f, UIComponents::COLOR_GOLD);
+
+        // Close button
+        Rectangle rClose = {x + w - 24.0f, y + 6.0f, 18.0f, 18.0f};
+        if (UIComponents::drawButton(rClose, "x"))
+        {
+            binEditor.active = false;
+            return;
+        }
+
+        if (binEditor.binId >= 0)
+        {
+            // Existing Bin Actions
+            const auto &bin = engine.data.bins[binEditor.binId];
+            UIComponents::drawText(bin.name.c_str(), x + 10.0f, y + 8.0f, 13.0f, UIComponents::COLOR_GOLD);
+
+            char statBuf[64];
+            std::snprintf(statBuf, sizeof(statBuf), "Waste: %.0f / %.0f kg (%.0f%%)",
+                          bin.currentWasteKg, bin.capacityKg, bin.getFillRatio() * 100.0);
+            UIComponents::drawText(statBuf, x + 10.0f, y + 32.0f, 11.0f, UIComponents::TEXT_MUTED);
+
+            if (UIComponents::drawButton({x + 10.0f, y + 58.0f, w - 20.0f, 28.0f}, "Trigger 750kg Overflow", true))
+            {
+                engine.triggerBinOverflow(binEditor.binId, 750.0);
+                binEditor.active = false;
             }
 
+            if (UIComponents::drawButton({x + 10.0f, y + 94.0f, w - 20.0f, 28.0f}, "Decommission Bin"))
+            {
+                engine.removeBin(binEditor.binId);
+                binEditor.active = false;
+            }
+        }
+        else
+        {
+            // Create New Bin on Empty Space
+            UIComponents::drawText("Place New Community Bin / STS", x + 10.0f, y + 8.0f, 12.0f, UIComponents::COLOR_CYAN);
+
             char capBuf[32];
-            std::snprintf(capBuf, sizeof(capBuf), "%.0f%%", intakePct);
-            int tw = UIComponents::measureText(capBuf, 10.0f);
-            UIComponents::drawText(capBuf, pos.x - tw * 0.5f, pos.y + 34.0f, 10.0f, ringColor);
+            std::snprintf(capBuf, sizeof(capBuf), "Capacity: %.0f kg", binEditor.capacityKg);
+            UIComponents::drawText(capBuf, x + 10.0f, y + 34.0f, 11.0f, UIComponents::TEXT_PRIMARY);
+
+            if (UIComponents::drawButton({x + 140.0f, y + 32.0f, 40.0f, 20.0f}, "1.5t"))
+                binEditor.capacityKg = 1500.0f;
+            if (UIComponents::drawButton({x + 185.0f, y + 32.0f, 40.0f, 20.0f}, "2.5t"))
+                binEditor.capacityKg = 2500.0f;
+
+            char wBuf[32];
+            std::snprintf(wBuf, sizeof(wBuf), "Initial Load: %.0f kg", binEditor.initialWasteKg);
+            UIComponents::drawText(wBuf, x + 10.0f, y + 64.0f, 11.0f, UIComponents::TEXT_PRIMARY);
+
+            if (UIComponents::drawButton({x + 140.0f, y + 62.0f, 40.0f, 20.0f}, "500"))
+                binEditor.initialWasteKg = 500.0f;
+            if (UIComponents::drawButton({x + 185.0f, y + 62.0f, 40.0f, 20.0f}, "900"))
+                binEditor.initialWasteKg = 900.0f;
+
+            if (UIComponents::drawButton({x + 10.0f, y + 100.0f, w - 20.0f, 30.0f}, "Create Bin", true))
+            {
+                std::string bName = "STS-Point-" + std::to_string(engine.data.bins.size() + 1);
+                engine.addNewBin(bName, binEditor.worldPos, binEditor.capacityKg, binEditor.initialWasteKg);
+                binEditor.active = false;
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    //  LEFT RAIL POPOVERS (Layers, Settings, Alerts)
+    // ─────────────────────────────────────────────────────────────
+
+    void Renderer::renderRailPopovers()
+    {
+        if (activePopover == 0)
+            return;
+
+        float popW = 230.0f;
+        float popH = 260.0f;
+        float popX = iconRailRect.x + iconRailRect.width + 4.0f;
+        float popY = iconRailRect.y + 10.0f;
+
+        Rectangle rPop = {popX, popY, popW, popH};
+        DrawRectangleRounded(rPop, 0.08f, 4, {20, 26, 38, 250});
+        DrawRectangleRoundedLinesEx(rPop, 0.08f, 4, 1.5f, UIComponents::COLOR_CYAN);
+
+        // Close button
+        if (UIComponents::drawButton({popX + popW - 24.0f, popY + 6.0f, 18.0f, 18.0f}, "x"))
+        {
+            activePopover = 0;
+            return;
+        }
+
+        if (activePopover == 1) // LAYERS POPOVER
+        {
+            UIComponents::drawText("Map Layer Visibility", popX + 12.0f, popY + 10.0f, 13.0f, UIComponents::COLOR_CYAN);
+            float ly = popY + 36.0f;
+
+            if (UIComponents::drawButton({popX + 12.0f, ly, popW - 24.0f, 26.0f}, layerFlags[0] ? "[x] Road Network" : "[ ] Road Network", layerFlags[0]))
+                layerFlags[0] = !layerFlags[0];
+            ly += 32.0f;
+
+            if (UIComponents::drawButton({popX + 12.0f, ly, popW - 24.0f, 26.0f}, layerFlags[1] ? "[x] Waste Bins" : "[ ] Waste Bins", layerFlags[1]))
+                layerFlags[1] = !layerFlags[1];
+            ly += 32.0f;
+
+            if (UIComponents::drawButton({popX + 12.0f, ly, popW - 24.0f, 26.0f}, layerFlags[2] ? "[x] Fleet Vehicles" : "[ ] Fleet Vehicles", layerFlags[2]))
+                layerFlags[2] = !layerFlags[2];
+            ly += 32.0f;
+
+            if (UIComponents::drawButton({popX + 12.0f, ly, popW - 24.0f, 26.0f}, layerFlags[3] ? "[x] Waterways / Districts" : "[ ] Waterways / Districts", layerFlags[3]))
+                layerFlags[3] = !layerFlags[3];
+            ly += 32.0f;
+
+            if (UIComponents::drawButton({popX + 12.0f, ly, popW - 24.0f, 26.0f}, showNodeIds ? "[x] Show Node IDs" : "[ ] Show Node IDs", showNodeIds))
+                showNodeIds = !showNodeIds;
+        }
+        else if (activePopover == 2) // SETTINGS POPOVER
+        {
+            UIComponents::drawText("Simulation Settings", popX + 12.0f, popY + 10.0f, 13.0f, UIComponents::COLOR_CYAN);
+            float sy = popY + 36.0f;
+
+            engine.wasteGenerationRateMultiplier = UIComponents::drawSlider({popX + 12.0f, sy, popW - 24.0f, 40.0f},
+                                                                            "Waste Growth Rate", static_cast<float>(engine.wasteGenerationRateMultiplier), 0.5f, 3.0f);
+            sy += 50.0f;
+
+            engine.simSpeedMultiplier = UIComponents::drawSlider({popX + 12.0f, sy, popW - 24.0f, 40.0f},
+                                                                 "Sim Speed Multiplier", engine.simSpeedMultiplier, 0.5f, 20.0f);
+            sy += 50.0f;
+
+            if (UIComponents::drawButton({popX + 12.0f, sy, popW - 24.0f, 28.0f}, "Reset All Congestion"))
+            {
+                engine.data.graph.resetAllCongestion();
+                engine.activeDisruptions.clear();
+            }
+        }
+        else if (activePopover == 3) // ALERTS POPOVER
+        {
+            UIComponents::drawText("Active Disruption Alerts", popX + 12.0f, popY + 10.0f, 13.0f, UIComponents::COLOR_GOLD);
+            float ay = popY + 34.0f;
+
+            int count = 0;
+            for (auto &d : engine.activeDisruptions)
+            {
+                if (!d.isActive)
+                    continue;
+                char dBuf[64];
+                std::snprintf(dBuf, sizeof(dBuf), "* %s", d.description.c_str());
+                UIComponents::drawText(dBuf, popX + 12.0f, ay, 11.0f, d.type == DisruptionType::ROAD_CLOSURE ? UIComponents::COLOR_RED : UIComponents::COLOR_GOLD);
+                ay += 20.0f;
+                if (++count >= 5)
+                    break;
+            }
+
+            if (count == 0)
+            {
+                UIComponents::drawText("No active disruptions.", popX + 12.0f, ay, 11.0f, UIComponents::TEXT_MUTED);
+                ay += 24.0f;
+            }
+
+            if (UIComponents::drawButton({popX + 12.0f, popY + popH - 38.0f, popW - 24.0f, 28.0f}, "Clear All Disruptions"))
+            {
+                engine.data.graph.resetAllCongestion();
+                engine.activeDisruptions.clear();
+            }
         }
     }
 
@@ -832,13 +1241,11 @@ namespace dhaka
 
     void Renderer::renderRightPanel()
     {
-        // Panel background
         DrawRectangleRec(rightPanelRect, UIComponents::PANEL_BG);
         DrawLine(static_cast<int>(rightPanelRect.x), static_cast<int>(rightPanelRect.y),
                  static_cast<int>(rightPanelRect.x), static_cast<int>(rightPanelRect.y + rightPanelRect.height),
                  UIComponents::PANEL_BORDER);
 
-        // Tab buttons
         float tabY = rightPanelRect.y + 8.0f;
         float tabH = 28.0f;
         float tabW = (rightPanelRect.width - 32.0f) / 3.0f;
@@ -856,7 +1263,6 @@ namespace dhaka
                                         activeTab == RightPanelTab::RESULTS))
             activeTab = RightPanelTab::RESULTS;
 
-        // Tab content area
         Rectangle contentRect = {
             rightPanelRect.x + 8.0f,
             tabY + tabH + 8.0f,
@@ -883,175 +1289,142 @@ namespace dhaka
 
     void Renderer::renderRightPanel_LiveFeed()
     {
-        float x = rightPanelRect.x + 14.0f;
+        float x = rightPanelRect.x + 12.0f;
         float y = rightPanelRect.y + 52.0f;
-        float maxY = rightPanelRect.y + rightPanelRect.height - 12.0f;
+        float maxY = rightPanelRect.y + rightPanelRect.height - 14.0f;
 
-        // Stage filter label
         const char *stageNames[] = {"Road Network", "Routing (A*)", "Sequencing (Greedy)",
                                     "Load Select (Knapsack)", "Landfill Balance (Max-Flow)"};
         char filterBuf[64];
-        std::snprintf(filterBuf, sizeof(filterBuf), "Stage: %s", stageNames[static_cast<int>(activeStage)]);
+        std::snprintf(filterBuf, sizeof(filterBuf), "Active Stage: %s", stageNames[static_cast<int>(activeStage)]);
         UIComponents::drawText(filterBuf, x, y, 11.0f, UIComponents::COLOR_CYAN);
         y += 20.0f;
-        DrawLine(static_cast<int>(x), static_cast<int>(y), static_cast<int>(rightPanelRect.x + rightPanelRect.width - 14),
+
+        DrawLine(static_cast<int>(x), static_cast<int>(y), static_cast<int>(rightPanelRect.x + rightPanelRect.width - 12),
                  static_cast<int>(y), UIComponents::PANEL_BORDER);
         y += 8.0f;
 
-        // Show feed entries (most recent first), filtered by active stage
+        // Display plain-language live feed entries synced to simulation
         int shown = 0;
         for (int i = static_cast<int>(engine.liveFeedLog.size()) - 1; i >= 0 && y < maxY; --i)
         {
             const auto &entry = engine.liveFeedLog[i];
 
-            // Show all entries or filter by stage
-            bool relevant = (entry.relevantStage == static_cast<int>(activeStage)) ||
-                            (activeStage == PipelineStage::ROAD_NETWORK); // Road network shows all
-
-            if (!relevant)
-                continue;
-
-            // Timestamp
             int hours = static_cast<int>(entry.timestamp / 3600.0) % 24;
             int mins = static_cast<int>(entry.timestamp / 60.0) % 60;
             char tsBuf[16];
             std::snprintf(tsBuf, sizeof(tsBuf), "%02d:%02d", hours, mins);
-            UIComponents::drawText(tsBuf, x, y, 10.0f, UIComponents::TEXT_MUTED);
+            UIComponents::drawText(tsBuf, x, y, 10.0f, UIComponents::COLOR_CYAN);
 
-            // Message (wrap text)
-            float msgX = x + 44.0f;
-            float msgW = rightPanelRect.width - 70.0f;
+            float msgX = x + 40.0f;
+            float msgW = rightPanelRect.width - 64.0f;
             const std::string &msg = entry.message;
-            int fontSize = 11;
             int maxChars = static_cast<int>(msgW / 6.5f);
             std::string displayMsg = msg.length() > static_cast<size_t>(maxChars) ? msg.substr(0, maxChars - 3) + "..." : msg;
-            UIComponents::drawText(displayMsg.c_str(), msgX, y, static_cast<float>(fontSize), UIComponents::TEXT_PRIMARY);
+            UIComponents::drawText(displayMsg.c_str(), msgX, y, 11.0f, UIComponents::TEXT_PRIMARY);
 
             y += 22.0f;
             shown++;
-            if (shown >= 20)
+            if (shown >= 18)
                 break;
         }
 
         if (shown == 0)
         {
-            UIComponents::drawText("No events yet for this stage.", x, y,
-                                   11.0f, UIComponents::TEXT_MUTED);
+            UIComponents::drawText("Awaiting live fleet telemetry...", x, y, 11.0f, UIComponents::TEXT_MUTED);
         }
     }
 
     void Renderer::renderRightPanel_Parameters()
     {
-        float x = rightPanelRect.x + 14.0f;
+        float x = rightPanelRect.x + 12.0f;
         float y = rightPanelRect.y + 52.0f;
-        float sliderW = rightPanelRect.width - 28.0f;
-        float sliderH = 48.0f;
+        float sliderW = rightPanelRect.width - 24.0f;
+        float sliderH = 46.0f;
 
-        // Simulation Speed
-        float newSpeed = UIComponents::drawSlider({x, y, sliderW, sliderH},
-                                                  "Simulation Speed", engine.simSpeedMultiplier, 0.5f, 20.0f);
-        engine.simSpeedMultiplier = newSpeed;
-        y += sliderH + 12.0f;
+        // 1. Truck Default Capacity Slider
+        float newTruckCap = UIComponents::drawSlider({x, y, sliderW, sliderH},
+                                                     "Truck Default Capacity (kg)", static_cast<float>(engine.truckDefaultCapacityKg), 2000.0f, 8000.0f);
+        engine.truckDefaultCapacityKg = newTruckCap;
+        y += sliderH + 10.0f;
 
-        // Active Disruptions section
-        UIComponents::drawText("Active Disruptions", x, y, 13.0f, UIComponents::TEXT_PRIMARY);
-        y += 22.0f;
-        DrawLine(static_cast<int>(x), static_cast<int>(y),
-                 static_cast<int>(x + sliderW), static_cast<int>(y), UIComponents::PANEL_BORDER);
-        y += 8.0f;
+        // 2. Aminbazar Max Intake Slider
+        float newAminCap = UIComponents::drawSlider({x, y, sliderW, sliderH},
+                                                    "Aminbazar Daily Intake (kg)", static_cast<float>(engine.data.landfills[0].dailyCapacityKg), 10000.0f, 50000.0f);
+        engine.data.landfills[0].dailyCapacityKg = newAminCap;
+        y += sliderH + 10.0f;
 
-        int count = 0;
-        for (auto it = engine.activeDisruptions.rbegin(); it != engine.activeDisruptions.rend(); ++it)
-        {
-            if (!it->isActive)
-                continue;
-            char dText[128];
-            std::snprintf(dText, sizeof(dText), "* %s", it->description.c_str());
-            UIComponents::drawText(dText, x, y, 11.0f,
-                                   it->type == DisruptionType::ROAD_CLOSURE ? UIComponents::COLOR_RED : UIComponents::COLOR_GOLD);
-            y += 18.0f;
-            if (++count >= 6)
-                break;
-        }
-        if (count == 0)
-        {
-            UIComponents::drawText("No active disruptions.", x, y,
-                                   11.0f, UIComponents::TEXT_MUTED);
-        }
+        // 3. Matuail Max Intake Slider
+        float newMatCap = UIComponents::drawSlider({x, y, sliderW, sliderH},
+                                                   "Matuail Daily Intake (kg)", static_cast<float>(engine.data.landfills[1].dailyCapacityKg), 10000.0f, 50000.0f);
+        engine.data.landfills[1].dailyCapacityKg = newMatCap;
+        y += sliderH + 10.0f;
+
+        // 4. Waste Generation Multiplier Slider
+        float newGenRate = UIComponents::drawSlider({x, y, sliderW, sliderH},
+                                                    "Waste Accumulation Rate", static_cast<float>(engine.wasteGenerationRateMultiplier), 0.5f, 3.0f);
+        engine.wasteGenerationRateMultiplier = newGenRate;
+        y += sliderH + 14.0f;
+
+        // Map Click Hint
+        UIComponents::drawText("Direct Map Actions:", x, y, 12.0f, UIComponents::COLOR_GOLD);
+        y += 18.0f;
+        UIComponents::drawText("* Click any road to edit base speed & congestion", x, y, 10.0f, UIComponents::TEXT_MUTED);
+        y += 16.0f;
+        UIComponents::drawText("* Click empty space to add new STS bin", x, y, 10.0f, UIComponents::TEXT_MUTED);
     }
 
     void Renderer::renderRightPanel_Results()
     {
-        float x = rightPanelRect.x + 8.0f;
+        float x = rightPanelRect.x + 10.0f;
         float y = rightPanelRect.y + 52.0f;
-        float cardW = rightPanelRect.width - 16.0f;
-        float cardH = 62.0f;
+        float cardW = rightPanelRect.width - 20.0f;
+        float cardH = 58.0f;
 
-        // Metric Cards
-        char valPending[32], valCollected[32], valOverflow[32], valFleet[32];
-        std::snprintf(valPending, sizeof(valPending), "%.0f kg", engine.metrics.currentTotalPendingWasteKg);
-        std::snprintf(valCollected, sizeof(valCollected), "%.0f kg", engine.metrics.totalWasteCollectedKg);
-        std::snprintf(valOverflow, sizeof(valOverflow), "%d bins", engine.metrics.currentOverflowingBins);
-        std::snprintf(valFleet, sizeof(valFleet), "%d / %d active", engine.metrics.activeTruckCount,
-                      static_cast<int>(engine.data.vehicles.size()));
+        // USER SPEC: "plain numbers: total distance, urgency points covered, landfill split, capacity slack per truck. No jargon, just the outcome."
 
+        // 1. Total Distance
+        char distBuf[32];
+        std::snprintf(distBuf, sizeof(distBuf), "%.1f km", engine.metrics.totalFleetDistanceKm);
         UIComponents::drawMetricCard({x, y, cardW, cardH},
-                                     "PENDING WASTE", valPending, "Bins Accumulating", UIComponents::COLOR_GOLD);
+                                     "TOTAL FLEET DISTANCE", distBuf, "Kilometers Logged", UIComponents::COLOR_CYAN);
         y += cardH + 8.0f;
 
+        // 2. Urgency Points Covered
+        char urgBuf[32];
+        std::snprintf(urgBuf, sizeof(urgBuf), "%.1f%%", engine.metrics.urgencyCoveragePercent);
         UIComponents::drawMetricCard({x, y, cardW, cardH},
-                                     "TOTAL COLLECTED", valCollected, "Shift Throughput", UIComponents::COLOR_GREEN);
+                                     "URGENCY POINTS COVERED", urgBuf, "City Waste Mitigated", UIComponents::COLOR_GREEN);
         y += cardH + 8.0f;
 
+        // 3. Landfill Split
+        double totalIntake = engine.data.landfills[0].currentIntakeKg + engine.data.landfills[1].currentIntakeKg;
+        double aminPct = totalIntake > 0 ? (engine.data.landfills[0].currentIntakeKg / totalIntake * 100.0) : 50.0;
+        double matPct = 100.0 - aminPct;
+
+        char splitBuf[64];
+        std::snprintf(splitBuf, sizeof(splitBuf), "Amin: %.0f%% | Mat: %.0f%%", aminPct, matPct);
         UIComponents::drawMetricCard({x, y, cardW, cardH},
-                                     "OVERFLOW RISKS", valOverflow, "Priority Managed",
-                                     engine.metrics.currentOverflowingBins > 0 ? UIComponents::COLOR_RED : UIComponents::COLOR_GREEN);
+                                     "LANDFILL LOAD SPLIT", splitBuf,
+                                     engine.metrics.landfillBalanceRatio >= 0.7 ? "Perfect Edmonds-Karp Balance" : "Re-balancing in progress",
+                                     UIComponents::COLOR_PURPLE);
         y += cardH + 8.0f;
 
-        UIComponents::drawMetricCard({x, y, cardW, cardH},
-                                     "FLEET DISPATCH", valFleet, "Knapsack Scheduled", UIComponents::COLOR_CYAN);
-        y += cardH + 16.0f;
-
-        // Landfill Balance Section
-        UIComponents::drawText("Landfill Balance (Max-Flow)", x + 6.0f, y, 13.0f, UIComponents::TEXT_PRIMARY);
-        y += 22.0f;
-
-        // Aminbazar bar
-        float pAmin = engine.data.landfills[0].dailyCapacityKg > 0
-                          ? static_cast<float>(engine.data.landfills[0].currentIntakeKg / engine.data.landfills[0].dailyCapacityKg * 100.0)
-                          : 0.0f;
-        char aminText[64];
-        std::snprintf(aminText, sizeof(aminText), "Aminbazar: %.0f / %.0f kg",
-                      engine.data.landfills[0].currentIntakeKg, engine.data.landfills[0].dailyCapacityKg);
-        UIComponents::drawText(aminText, x + 6.0f, y, 11.0f, UIComponents::TEXT_PRIMARY);
-        y += 16.0f;
-        UIComponents::drawProgressBar({x + 6, y, cardW - 12, 14.0f}, pAmin,
-                                      pAmin > 85.0f ? UIComponents::COLOR_RED : UIComponents::COLOR_CYAN, nullptr);
-        y += 24.0f;
-
-        // Matuail bar
-        float pMat = engine.data.landfills[1].dailyCapacityKg > 0
-                         ? static_cast<float>(engine.data.landfills[1].currentIntakeKg / engine.data.landfills[1].dailyCapacityKg * 100.0)
-                         : 0.0f;
-        char matText[64];
-        std::snprintf(matText, sizeof(matText), "Matuail: %.0f / %.0f kg",
-                      engine.data.landfills[1].currentIntakeKg, engine.data.landfills[1].dailyCapacityKg);
-        UIComponents::drawText(matText, x + 6.0f, y, 11.0f, UIComponents::TEXT_PRIMARY);
-        y += 16.0f;
-        UIComponents::drawProgressBar({x + 6, y, cardW - 12, 14.0f}, pMat,
-                                      pMat > 85.0f ? UIComponents::COLOR_RED : UIComponents::COLOR_PURPLE, nullptr);
-        y += 24.0f;
-
-        // Balance ratio
-        char balBuf[64];
-        std::snprintf(balBuf, sizeof(balBuf), "Edmonds-Karp Balance: %.1f%%",
-                      engine.metrics.landfillBalanceRatio * 100.0);
-        UIComponents::drawText(balBuf, x + 6.0f, y, 12.0f,
-                               engine.metrics.landfillBalanceRatio >= 0.7 ? UIComponents::COLOR_GREEN : UIComponents::COLOR_GOLD);
+        // 4. Truck Capacity Slack
+        UIComponents::drawText("Capacity Slack Per Truck:", x + 4.0f, y, 12.0f, UIComponents::TEXT_PRIMARY);
         y += 18.0f;
-        UIComponents::drawProgressBar({x + 6, y, cardW - 12, 12.0f},
-                                      static_cast<float>(engine.metrics.landfillBalanceRatio * 100.0),
-                                      engine.metrics.landfillBalanceRatio >= 0.7 ? UIComponents::COLOR_GREEN : UIComponents::COLOR_GOLD, nullptr);
+
+        for (const auto &v : engine.data.vehicles)
+        {
+            double slackKg = v.getRemainingCapacity();
+            double slackPct = (slackKg / v.capacityKg) * 100.0;
+            char truckBuf[64];
+            std::snprintf(truckBuf, sizeof(truckBuf), "%s: %.0f kg free (%.0f%%)",
+                          v.name.c_str(), slackKg, slackPct);
+            UIComponents::drawText(truckBuf, x + 6.0f, y, 10.0f,
+                                   slackPct < 15.0 ? UIComponents::COLOR_RED : UIComponents::TEXT_MUTED);
+            y += 16.0f;
+        }
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -1093,8 +1466,8 @@ namespace dhaka
                 {"Length:", std::to_string(static_cast<int>(edge.lengthMeters)) + " meters"},
                 {"Base Speed:", std::to_string(static_cast<int>(edge.baseSpeedKmh)) + " km/h"},
                 {"Congestion:", edge.isClosed ? "CLOSED" : (std::to_string(edge.congestionFactor).substr(0, 3) + "x")},
-                {"Est. Travel:", edge.isClosed ? "BLOCKED" : (std::to_string(static_cast<int>(edge.getTravelTimeSeconds())) + " sec")},
-                {"Click Action:", edge.isClosed ? "Click to Reopen" : (edge.congestionFactor > 1.2 ? "Click to Close" : "Click to Congest")}};
+                {"Est. Travel:", edge.isClosed ? "BLOCKED" : (std::to_string(static_cast<int>(edge.getTravelTimeSeconds(engine.getHourOfDay()))) + " sec")},
+                {"Click Action:", "Click to edit weight directly"}};
             UIComponents::drawTooltip({mousePos.x + 15, mousePos.y + 15}, edge.roadName, fields);
         }
         else if (hoveredLandfillId >= 0 && hoveredLandfillId < static_cast<int>(engine.data.landfills.size()))

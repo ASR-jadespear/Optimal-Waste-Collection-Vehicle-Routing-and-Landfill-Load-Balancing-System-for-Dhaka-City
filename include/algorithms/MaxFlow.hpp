@@ -2,6 +2,7 @@
 
 #include "core/Landfill.hpp"
 #include "core/Vehicle.hpp"
+#include "algorithms/AlgorithmTrace.hpp"
 #include <vector>
 #include <unordered_map>
 
@@ -45,7 +46,8 @@ namespace dhaka
             const std::vector<TruckDemand> &pendingTrucks,
             const Landfill &aminbazar,
             const Landfill &matuail,
-            bool enforceEqualBalance = true);
+            bool enforceEqualBalance = true,
+            class AlgorithmTrace *traceOut = nullptr);
 
         // Generic Edmonds-Karp algorithm on raw residual network
         static double edmondsKarp(

@@ -2,6 +2,7 @@
 #include <iostream>
 #include <sstream>
 #include <random>
+#include <iomanip>
 #include <algorithm>
 
 namespace dhaka
@@ -40,7 +41,7 @@ namespace dhaka
         initialize();
     }
 
-    void SimulationEngine::logFeed(const std::string& msg, int stage)
+    void SimulationEngine::logFeed(const std::string &msg, int stage)
     {
         LiveFeedEntry entry;
         entry.timestamp = simTimeSeconds;
@@ -429,6 +430,7 @@ namespace dhaka
 
             case VehicleState::EN_ROUTE_TO_BIN:
             {
+                metrics.totalFleetDistanceKm += (v.moveSpeedPixelsPerSec * dtSec * 20.0) / 1000.0;
                 bool reached = v.stepMovement(dtSec, data.graph);
                 if (reached)
                 {
@@ -486,6 +488,7 @@ namespace dhaka
 
             case VehicleState::EN_ROUTE_TO_LANDFILL:
             {
+                metrics.totalFleetDistanceKm += (v.moveSpeedPixelsPerSec * dtSec * 20.0) / 1000.0;
                 bool reached = v.stepMovement(dtSec, data.graph);
                 if (reached)
                 {
@@ -530,6 +533,7 @@ namespace dhaka
 
             case VehicleState::RETURNING_TO_DEPOT:
             {
+                metrics.totalFleetDistanceKm += (v.moveSpeedPixelsPerSec * dtSec * 20.0) / 1000.0;
                 bool reached = v.stepMovement(dtSec, data.graph);
                 if (reached)
                 {
@@ -565,6 +569,18 @@ namespace dhaka
         if (!data.bins.empty())
         {
             metrics.averageUrgencyScore = totalUrgency / data.bins.size();
+        }
+
+        double totalCapacity = 0.0;
+        double totalWaste = 0.0;
+        for (const auto &b : data.bins)
+        {
+            totalCapacity += b.capacityKg;
+            totalWaste += b.currentWasteKg;
+        }
+        if (totalCapacity > 0.0)
+        {
+            metrics.urgencyCoveragePercent = std::clamp((1.0 - (totalWaste / totalCapacity)) * 100.0, 0.0, 100.0);
         }
 
         metrics.aminbazarIntakeKg = data.landfills[0].currentIntakeKg;
@@ -615,6 +631,193 @@ namespace dhaka
         }
 
         updateMetrics();
+    }
+
+    void SimulationEngine::setSimTimeHours(double hours)
+    {
+        simTimeSeconds = hours * 3600.0;
+        double currentHour = getHourOfDay();
+
+        // Re-evaluate affected vehicle paths with new diurnal edge weights
+        for (auto &v : data.vehicles)
+        {
+            if (v.state == VehicleState::EN_ROUTE_TO_BIN || v.state == VehicleState::EN_ROUTE_TO_LANDFILL)
+            {
+                recalculateVehiclePath(v.id);
+            }
+        }
+
+        std::ostringstream ss;
+        ss << "Timeline shifted to " << static_cast<int>(currentHour) << ":00 hrs. Time-varying traffic weights updated.";
+        logFeed(ss.str(), 0);
+    }
+
+    void SimulationEngine::updateRoadEdge(int edgeId, double speedKmh, double congestion, bool isClosed)
+    {
+        if (edgeId < 0 || edgeId >= data.graph.getEdgeCount())
+            return;
+
+        auto &edge = data.graph.getEdge(edgeId);
+        edge.baseSpeedKmh = speedKmh;
+        edge.congestionFactor = congestion;
+        edge.isClosed = isClosed;
+
+        // Also update opposite direction if bidirectional
+        int revEdgeId = data.graph.getEdgeBetween(edge.toNode, edge.fromNode);
+        if (revEdgeId >= 0 && revEdgeId < data.graph.getEdgeCount())
+        {
+            auto &revEdge = data.graph.getEdge(revEdgeId);
+            revEdge.baseSpeedKmh = speedKmh;
+            revEdge.congestionFactor = congestion;
+            revEdge.isClosed = isClosed;
+        }
+
+        // Selective Downstream Adaptation: only reroute trucks that have this edge in their route!
+        int reroutedTrucks = 0;
+        for (auto &v : data.vehicles)
+        {
+            for (size_t i = v.currentPathSegmentIndex; i + 1 < v.pathNodeIds.size(); ++i)
+            {
+                int e = data.graph.getEdgeBetween(v.pathNodeIds[i], v.pathNodeIds[i + 1]);
+                if (e == edgeId || e == revEdgeId)
+                {
+                    recalculateVehiclePath(v.id);
+                    reroutedTrucks++;
+                    break;
+                }
+            }
+        }
+
+        std::ostringstream ss;
+        ss << "Road updated: " << edge.roadName << " (speed: " << static_cast<int>(speedKmh)
+           << " km/h, congestion: " << congestion << "x, " << (isClosed ? "CLOSED" : "OPEN")
+           << "). Re-routed " << reroutedTrucks << " active trucks.";
+        logFeed(ss.str(), 0);
+        lastAlgorithmStatusMessage = ss.str();
+    }
+
+    int SimulationEngine::addNewBin(const std::string &name, Vec2 pos, double capacityKg, double initialWasteKg, Corporation corp)
+    {
+        int nearestNode = data.graph.findNearestNode(pos);
+        if (nearestNode < 0)
+            nearestNode = 0;
+
+        int newBinId = static_cast<int>(data.bins.size());
+        CollectionPoint bin;
+        bin.id = newBinId;
+        bin.name = name;
+        bin.nodeId = nearestNode;
+        bin.position = pos;
+        bin.capacityKg = capacityKg;
+        bin.currentWasteKg = initialWasteKg;
+        bin.accumulationRateKgPerHour = 45.0 * wasteGenerationRateMultiplier;
+        bin.corporation = corp;
+        bin.urgencyScore = (initialWasteKg / capacityKg);
+
+        data.bins.push_back(bin);
+        runGlobalUrgencyAudit();
+
+        std::ostringstream ss;
+        ss << "New community bin placed: " << name << " at Node #" << nearestNode
+           << " (" << static_cast<int>(initialWasteKg) << "/" << static_cast<int>(capacityKg) << " kg).";
+        logFeed(ss.str(), 2);
+        lastAlgorithmStatusMessage = ss.str();
+
+        return newBinId;
+    }
+
+    bool SimulationEngine::removeBin(int binId)
+    {
+        if (binId < 0 || binId >= static_cast<int>(data.bins.size()))
+            return false;
+
+        data.bins[binId].currentWasteKg = 0.0;
+        data.bins[binId].isAssigned = false;
+        data.bins[binId].urgencyScore = 0.0;
+
+        runGlobalUrgencyAudit();
+
+        std::ostringstream ss;
+        ss << "Bin #" << binId << " (" << data.bins[binId].name << ") decommissioned/cleared.";
+        logFeed(ss.str(), 2);
+        return true;
+    }
+
+    void SimulationEngine::generateTraceForStage(int stage)
+    {
+        activeTrace.clear();
+
+        if (stage == 0) // Road Network Audit
+        {
+            activeTrace.type = TraceType::ROAD_NETWORK_AUDIT;
+            activeTrace.title = "Dhaka Arterial Network Dynamic Weight Audit";
+
+            for (size_t i = 0; i < data.graph.edges.size() && activeTrace.steps.size() < 25; i += 3)
+            {
+                const auto &edge = data.graph.edges[i];
+                AlgorithmStep step;
+                step.type = TraceType::ROAD_NETWORK_AUDIT;
+                step.activeEdgeId = edge.id;
+                step.activeNodeId = edge.fromNode;
+                step.targetNodeId = edge.toNode;
+                std::ostringstream ss;
+                ss << "Edge e" << edge.id << " (" << edge.roadName << "): base speed "
+                   << static_cast<int>(edge.baseSpeedKmh) << " km/h, diurnal factor "
+                   << std::fixed << std::setprecision(1) << edge.getTimeOfDayMultiplier(getHourOfDay())
+                   << "x -> current travel time " << static_cast<int>(edge.getTravelTimeSeconds(getHourOfDay())) << "s.";
+                step.narration = ss.str();
+                activeTrace.addStep(step);
+            }
+        }
+        else if (stage == 1) // Routing (A*)
+        {
+            int activeTruckId = 0;
+            for (const auto &v : data.vehicles)
+            {
+                if (!v.pathNodeIds.empty())
+                {
+                    activeTruckId = v.id;
+                    break;
+                }
+            }
+            const auto &v = data.vehicles[activeTruckId];
+            int startNode = v.currentNodeId;
+            int goalNode = v.pathNodeIds.empty() ? (startNode == 0 ? 12 : 0) : v.pathNodeIds.back();
+
+            Pathfinding::findPathAStar(data.graph, startNode, goalNode, 50.0, getHourOfDay(), &activeTrace);
+        }
+        else if (stage == 2) // Sequencing (Greedy TSP)
+        {
+            std::vector<int> candidateBins;
+            for (size_t i = 0; i < std::min(size_t(6), data.bins.size()); ++i)
+            {
+                candidateBins.push_back(static_cast<int>(i));
+            }
+            GreedyTSP::sequenceVisits(data.vehicles[0].currentNodeId, candidateBins, data.bins, data.graph, 1.8, 1.0, &activeTrace, 0);
+        }
+        else if (stage == 3) // Load Select (Knapsack DP)
+        {
+            std::vector<const CollectionPoint *> candidates;
+            for (const auto &bin : data.bins)
+            {
+                if (bin.currentWasteKg >= 30.0)
+                {
+                    candidates.push_back(&bin);
+                }
+                if (candidates.size() >= 10)
+                    break;
+            }
+            KnapsackDP::solve(truckDefaultCapacityKg, candidates, 25.0, &activeTrace, 0);
+        }
+        else if (stage == 4) // Landfill Balance (Max-Flow)
+        {
+            std::vector<TruckDemand> demands;
+            for (const auto &v : data.vehicles)
+            {
+                demands.push_back({v.id, std::max(1200.0, v.currentLoadKg), (v.corporation == Corporation::DNCC ? 0 : 1), 0.0, 0.0});
+            }
+            MaxFlow::balanceLandfillLoads(demands, data.landfills[0], data.landfills[1], true, &activeTrace);
+        }
     }
 
 } // namespace dhaka

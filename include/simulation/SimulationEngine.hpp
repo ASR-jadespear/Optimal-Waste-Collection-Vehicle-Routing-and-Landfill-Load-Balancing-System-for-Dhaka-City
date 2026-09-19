@@ -7,6 +7,7 @@
 #include "algorithms/GreedyTSP.hpp"
 #include "algorithms/Pathfinding.hpp"
 #include "algorithms/MaxFlow.hpp"
+#include "algorithms/AlgorithmTrace.hpp"
 #include "core/Disruption.hpp"
 #include <vector>
 #include <string>
@@ -27,13 +28,15 @@ namespace dhaka
         double landfillBalanceRatio = 1.0;
         int activeTruckCount = 0;
         int completedTripsCount = 0;
+        double totalFleetDistanceKm = 0.0;
+        double urgencyCoveragePercent = 95.0;
     };
 
     struct LiveFeedEntry
     {
-        double timestamp = 0.0;   // sim time in seconds
+        double timestamp = 0.0; // sim time in seconds
         std::string message;
-        int relevantStage = 0;    // 0=RoadNetwork, 1=Routing, 2=Sequencing, 3=LoadSelect, 4=LandfillBalance
+        int relevantStage = 0; // 0=RoadNetwork, 1=Routing, 2=Sequencing, 3=LoadSelect, 4=LandfillBalance
     };
 
     class SimulationEngine
@@ -42,10 +45,11 @@ namespace dhaka
         SimulationData data;
         SystemMetrics metrics;
 
-        // Simulation Clock
+        // Simulation Clock & Mode
         double simTimeSeconds = 0.0;
         float simSpeedMultiplier = 1.0f;
         bool isPaused = false;
+        bool isLiveMode = false; // Live mode mirrors wall-clock time
 
         // Algorithmic Data & State
         UrgencyPriorityQueue priorityQueue;
@@ -54,13 +58,22 @@ namespace dhaka
         LandfillAssignmentResult lastMaxFlowResult;
         std::string lastAlgorithmStatusMessage;
 
+        // Step-by-Step Algorithm Debugger Trace
+        AlgorithmTrace activeTrace;
+        void generateTraceForStage(int stage);
+
         // Live Feed for UI narration
         std::vector<LiveFeedEntry> liveFeedLog;
-        void logFeed(const std::string& msg, int stage);
+        void logFeed(const std::string &msg, int stage);
 
         // Active Disruptions
         std::vector<DisruptionEvent> activeDisruptions;
         int nextDisruptionId = 1;
+
+        // Customization Parameters (Parameters Tab)
+        double truckDefaultCapacityKg = 4500.0;
+        double wasteGenerationRateMultiplier = 1.0;
+        double trafficPeakMultiplier = 2.5;
 
         SimulationEngine();
 
@@ -70,12 +83,17 @@ namespace dhaka
         // Core Tick
         void update(float dtRealSeconds);
 
-        // Manual / Interactive Disruption Triggers
+        // Manual / Interactive Disruption Triggers (Selective downstream re-triggering)
         void triggerRoadCongestion(int edgeId, double factor = 4.0);
         void triggerRoadClosure(int edgeId);
         void clearRoadDisruption(int edgeId);
         void triggerBinOverflow(int binId, double extraWasteKg = 600.0);
         void triggerRandomDhakaDisruption();
+
+        // Direct Map Editing (Road weights and Dynamic Bins)
+        void updateRoadEdge(int edgeId, double speedKmh, double congestion, bool isClosed);
+        int addNewBin(const std::string &name, Vec2 pos, double capacityKg = 1500.0, double initialWasteKg = 600.0, Corporation corp = Corporation::COMBINED);
+        bool removeBin(int binId);
 
         // Algorithm Dispatchers
         void runGlobalUrgencyAudit();                 // Uses MergeSort
@@ -85,7 +103,8 @@ namespace dhaka
 
         // Status Queries
         double getSimTimeHours() const { return simTimeSeconds / 3600.0; }
-        int getHourOfDay() const { return static_cast<int>(getSimTimeHours()) % 24; }
+        double getHourOfDay() const { return std::fmod(getSimTimeHours(), 24.0); }
+        void setSimTimeHours(double hours);
 
     private:
         void updateBins(double dtHours);
